@@ -1349,6 +1349,32 @@ def _run_docker_match(run_dir: str, match_id: int, log_file_path: str) -> None:
             logger.exception('Match %d: error notifying queue after completion', match_id)
 
 
+def _rename_replay_to_convention(run_dir: str, match_id: int) -> None:
+    """Rename replay files to the lab's telemetry-style naming convention.
+
+    aiarena emits ``<game_num>_<Bot1>_vs_<Bot2>.SC2Replay`` where the
+    leading number is the game-within-config (always 1 for single games).
+    Replace it with the lab Match ID so replays are keyed by the same
+    identifier as PiG telemetry files (``<match_id>.jsonl``) and source
+    replay uploads (``<match_id>_source.SC2Replay``).
+
+    Idempotent: filenames already carrying the match ID prefix are
+    left untouched.
+    """
+    replay_dir = os.path.join(run_dir, 'replays')
+    if not os.path.isdir(replay_dir):
+        return
+    for path in glob.glob(os.path.join(replay_dir, '*.SC2Replay')):
+        base = os.path.basename(path)
+        parts = base.split('_', 1)
+        rest = parts[1] if len(parts) == 2 else base
+        new_name = f'{match_id}_{rest}'
+        if base == new_name:
+            continue
+        os.rename(path, os.path.join(replay_dir, new_name))
+        logger.info('Match %d: renamed replay to %s', match_id, new_name)
+
+
 def _collect_and_save_result(run_dir: str, match_id: int) -> None:
     """Parse results.json and update the Match record in the database.
 
@@ -1357,6 +1383,9 @@ def _collect_and_save_result(run_dir: str, match_id: int) -> None:
     """
     aiarena_result = _parse_results(run_dir)
     logger.info('Match %d: parsed results: %s', match_id, aiarena_result)
+
+    # Key replays by the lab Match ID (telemetry naming convention).
+    _rename_replay_to_convention(run_dir, match_id)
 
     from .models import Match as MatchModel
     try:

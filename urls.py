@@ -6,6 +6,7 @@ urlpatterns = [
     # Top-level pages
     path('', views.results_page, name='results'),
     path('run-match/', views.run_match_page, name='run_match'),
+    path('experiment/', views.experiment_results_page, name='experiment_results'),
     path('config/', views.config_page, name='config_page'),
     path('custom/', views.custom_page, name='custom_page'),
 
@@ -18,6 +19,7 @@ urlpatterns = [
 
     # Serve files
     path('replay/<int:match_id>/', views.serve_replay, name='serve_replay'),
+    path('group/<int:group_id>/', views.test_group_detail, name='test_group_detail'),
     path('log/<int:match_id>/', views.serve_log, name='serve_log'),
     path('log/<int:match_id>/bot/<str:bot_name>/', views.serve_aiarena_bot_log, name='serve_aiarena_bot_log'),
 

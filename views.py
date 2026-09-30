@@ -1262,28 +1262,88 @@ def api_trigger_tests(request):
         return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
 
 
+def test_group_detail(request, group_id):
+    """Drill-down page: every match in a test group, with replay/log links."""
+    group = TestGroup.objects.filter(id=group_id).first()
+    if group is None:
+        raise Http404("Test group not found")
+
+    matches = list(
+        Match.objects.select_related('opponent_bot', 'test_bot', 'replay_test')
+        .filter(test_group_id=group_id)
+        .order_by('id')
+    )
+    for m in matches:
+        m.has_replay = bool(aiarena_runner.get_replay_path(m.id)) or bool(
+            glob.glob(os.path.join(_get_logs_dir(), f"{m.id}_*.SC2Replay"))
+        )
+        m.has_bot_log = bool(aiarena_runner.get_bot_log_path(m.id, m.test_bot_directory))
+        m.has_log = bool(aiarena_runner.get_match_log_path(m.id)) or bool(
+            [f for f in glob.glob(os.path.join(_get_logs_dir(), f"{m.id}*.log"))
+             if '_stderr.log' not in f]
+        )
+
+    wins = sum(1 for m in matches if m.result == 'Victory')
+    losses = sum(1 for m in matches if m.result in ('Defeat', 'Crash'))
+    decided = wins + losses
+    win_rate = f"{(wins / decided) * 100:.0f}" if decided else "-"
+
+    opponent_names = sorted({
+        (m.opponent_bot.name if m.opponent_bot else
+         (m.replay_test.name if m.replay_test else f"{m.opponent_race} {m.opponent_difficulty}"))
+        for m in matches
+    })
+    map_names = sorted({m.map_name for m in matches})
+
+    context = {
+        'active_page': 'results',
+        'test_group': group,
+        'matches': matches,
+        'wins': wins,
+        'losses': losses,
+        'win_rate': win_rate,
+        'total': len(matches),
+        'opponents_label': ', '.join(opponent_names),
+        'map_names_label': ', '.join(map_names),
+    }
+    return render(request, 'test_lab/test_group_detail.html', context)
+
+
 def serve_replay(request, match_id):
-    """Open replay files with StarCraft 2 locally."""
-    config = SystemConfig.load()
-    sc2_switcher = config.sc2_switcher_path
+    """Serve replay files as downloads.
+
+    Previously tried to launch SC2Switcher locally via subprocess; that only
+    works when the UI runs on the same machine as a StarCraft 2 install. The
+    lab now runs headless behind tailscale, so serve the replay file itself
+    and let the client open it in their own viewer.
+    """
+    from django.http import FileResponse
 
     # Check aiarena run directory first
     replay_path = aiarena_runner.get_replay_path(match_id)
     if replay_path:
-        subprocess.Popen([sc2_switcher, replay_path])
-        return HttpResponse(status=204)
+        return FileResponse(
+            open(replay_path, 'rb'),
+            content_type='application/octet-stream',
+            as_attachment=True,
+            filename=os.path.basename(replay_path),
+        )
 
     # Fall back to single-container directory
     replay_dir = _get_logs_dir()
     replay_pattern = os.path.join(replay_dir, f"{match_id}_*.SC2Replay")
     replay_files = glob.glob(replay_pattern)
-    
+
     if not replay_files:
         raise Http404("Replay file not found")
-    
+
     file_path = replay_files[0]
-    subprocess.Popen([sc2_switcher, file_path])
-    return HttpResponse(status=204)
+    return FileResponse(
+        open(file_path, 'rb'),
+        content_type='application/octet-stream',
+        as_attachment=True,
+        filename=os.path.basename(file_path),
+    )
 
 def serve_log(request, match_id):
     """Serve the main log file for a match.
@@ -3392,3 +3452,150 @@ def merge_branch(request, ticket_id):
         'output': merge.stdout.strip(),
         'worktree_removed': worktree_removed,
     })
+
+
+# ---------------------------------------------------------------------------
+# Experiment Results — visual dashboard for A/B condition experiments
+# ---------------------------------------------------------------------------
+def _condition_of(map_name):
+    """Map experiment maps to condition labels (A = pre-patch, B = 5.0.16)."""
+    if not map_name:
+        return None
+    if '5.0.16' in map_name:
+        return 'B: Patch 5.0.16'
+    if map_name.startswith('UltraloveAIE'):
+        return 'A: Pre-patch'
+    return None
+
+
+def _svg_survival_bars(stats):
+    """Horizontal survival-rate comparison bars (0-100%)."""
+    conds = sorted(stats.keys())
+    if not conds:
+        return ''
+    row_h, label_w, bar_max, pad = 44, 150, 420, 10
+    h = pad * 2 + row_h * len(conds)
+    parts = [f'<svg viewBox="0 0 600 {h}" xmlns="http://www.w3.org/2000/svg" role="img" style="width:100%;max-width:600px;height:auto;">']
+    for i, c in enumerate(conds):
+        y = pad + i * row_h
+        s = stats[c]
+        pct = s['survival_rate']
+        color = '#007bff' if c.startswith('A') else '#e83e8c'
+        parts.append(f'<text x="{label_w - 8}" y="{y + 18}" text-anchor="end" font-size="13" fill="#212529">{c}</text>')
+        parts.append(f'<rect x="{label_w}" y="{y}" width="{bar_max}" height="28" rx="4" fill="#e9ecef"/>')
+        w = max(2, int(bar_max * pct / 100))
+        parts.append(f'<rect x="{label_w}" y="{y}" width="{w}" height="28" rx="4" fill="{color}"/>')
+        parts.append(f'<text x="{label_w + bar_max + 8}" y="{y + 18}" font-size="13" font-weight="bold" fill="#212529">{pct:.0f}%</text>')
+        parts.append(f'<text x="{label_w + bar_max + 52}" y="{y + 18}" font-size="11" fill="#6c757d">({s["victories"]}/{s["decided"]})</text>')
+    parts.append('</svg>')
+    return ''.join(parts)
+
+
+def _svg_duration_scatter(stats):
+    """Game-duration scatter, one lane per condition."""
+    conds = sorted(stats.keys())
+    if not conds:
+        return ''
+    lane_h, pad, w = 60, 24, 600
+    max_dur = max((max(s['durations']) for s in stats.values() if s['durations']), default=480)
+    max_dur = max(max_dur, 120)
+    plot_w = w - pad - 130
+    x_of = lambda d: pad + plot_w * (d / max_dur)
+    h = pad + lane_h * len(conds) + 30
+    parts = [f'<svg viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg" role="img" style="width:100%;max-width:600px;height:auto;">']
+    for t in range(0, max_dur + 1, 60):
+        x = x_of(t)
+        parts.append(f'<line x1="{x}" y1="{pad - 6}" x2="{x}" y2="{h - 26}" stroke="#dee2e6" stroke-dasharray="3,3"/>')
+        parts.append(f'<text x="{x}" y="{h - 10}" text-anchor="middle" font-size="10" fill="#6c757d">{t // 60}:{t % 60:02d}</text>')
+    for i, c in enumerate(conds):
+        y_mid = pad + i * lane_h + lane_h // 2
+        color = '#007bff' if c.startswith('A') else '#e83e8c'
+        parts.append(f'<line x1="{pad}" y1="{y_mid}" x2="{pad + plot_w}" y2="{y_mid}" stroke="#ced4da"/>')
+        for d in stats[c]['durations']:
+            x = x_of(d)
+            won = None
+            parts.append(f'<circle cx="{x}" cy="{y_mid - 8}" r="5" fill="{color}" fill-opacity="0.75"/>')
+        parts.append(f'<text x="{pad + plot_w + 6}" y="{y_mid - 4}" font-size="12" fill="#212529">{c}</text>')
+        parts.append(f'<text x="{pad + plot_w + 6}" y="{y_mid + 12}" font-size="10" fill="#6c757d">avg {stats[c]["avg_duration"]:.0f}s</text>')
+    parts.append('</svg>')
+    return ''.join(parts)
+
+
+def _svg_trend(stats):
+    """Cumulative defender-survival rate over game sequence, one line per condition."""
+    conds = sorted(stats.keys())
+    if not conds:
+        return ''
+    w, h, pad = 600, 260, 34
+    max_n = max((len(s['outcomes']) for s in stats.values()), default=0)
+    if max_n < 2:
+        return ''
+    x_of = lambda i: pad + (w - pad - 46) * (i / (max_n - 1))
+    y_of = lambda pct: pad + (h - 2 * pad) * (1 - pct / 100)
+    parts = [f'<svg viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg" role="img" style="width:100%;max-width:600px;height:auto;">']
+    for pct in (0, 25, 50, 75, 100):
+        y = y_of(pct)
+        parts.append(f'<line x1="{pad}" y1="{y}" x2="{w - 46}" y2="{y}" stroke="#dee2e6" stroke-dasharray="3,3"/>')
+        parts.append(f'<text x="{pad - 6}" y="{y + 4}" text-anchor="end" font-size="10" fill="#6c757d">{pct}%</text>')
+    palette = {'A': '#007bff', 'B': '#e83e8c'}
+    for c in conds:
+        outs = stats[c]['outcomes']  # ordered: True = defender survived
+        if len(outs) < 2:
+            continue
+        color = palette.get(c[0], '#6c757d')
+        pts, wins = [], 0
+        for i, win in enumerate(outs):
+            wins += 1 if win else 0
+            pts.append(f'{x_of(i):.1f},{y_of(100 * wins / (i + 1)):.1f}')
+        parts.append(f'<polyline points="{" ".join(pts)}" fill="none" stroke="{color}" stroke-width="2.5"/>')
+        parts.append(f'<text x="{w - 42}" y="{y_of(100 * wins / len(outs)) + 4}" font-size="11" fill="{color}">{c.split(":")[0]}</text>')
+    parts.append('</svg>')
+    return ''.join(parts)
+
+
+def experiment_results_page(request):
+    """Visual dashboard for A/B condition experiments (video-friendly)."""
+    from test_lab.models import Match
+
+    matches = list(
+        Match.objects.exclude(result__in=['Pending', 'Queued'])
+        .order_by('id')
+        .values('id', 'map_name', 'result', 'duration_in_game_time', 'start_timestamp')
+    )
+
+    stats = {}
+    for m in matches:
+        cond = _condition_of(m['map_name'])
+        if cond is None:
+            continue
+        s = stats.setdefault(cond, {
+            'victories': 0, 'defeats': 0, 'errors': 0, 'durations': [],
+            'outcomes': [], 'total': 0, 'slug': cond[0],
+        })
+        s['total'] += 1
+        if m['result'] == 'Victory':
+            s['victories'] += 1
+            s['outcomes'].append(True)
+        elif m['result'] == 'Defeat':
+            s['defeats'] += 1
+            s['outcomes'].append(False)
+        else:
+            s['errors'] += 1
+        dur = m['duration_in_game_time'] or 0
+        if dur:
+            s['durations'].append(dur)
+
+    for s in stats.values():
+        s['decided'] = s['victories'] + s['defeats']
+        s['survival_rate'] = (100.0 * s['victories'] / s['decided']) if s['decided'] else 0.0
+        s['avg_duration'] = sum(s['durations']) / len(s['durations']) if s['durations'] else 0.0
+
+    context = {
+        'active_page': 'experiment',
+        'stats': stats,
+        'total_matches': len(matches),
+        'chart_bars': _svg_survival_bars(stats),
+        'chart_durations': _svg_duration_scatter(stats),
+        'chart_trend': _svg_trend(stats),
+    }
+    return render(request, 'test_lab/experiment_results.html', context)

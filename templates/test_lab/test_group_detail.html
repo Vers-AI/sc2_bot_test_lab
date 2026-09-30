@@ -1,0 +1,87 @@
+{% extends "test_lab/base.html" %}
+{% load time_filters %}
+
+{% block title %}Test Group {{ test_group.id }} - Test Lab{% endblock %}
+
+{% block extra_css %}
+.victory { background-color: #d4edda; color: #155724; }
+.defeat { background-color: #f8d7da; color: #721c24; }
+.crash { background-color: #fff3cd; color: #856404; }
+.tie, .undecided { background-color: #e2e3e5; color: #383d41; }
+.pending, .queued { background-color: #d1ecf1; color: #0c5460; }
+.group-header { margin: 0 0 15px 0; }
+.group-header h2 { margin-bottom: 4px; }
+.group-header .meta { color: #555; font-size: 15px; }
+.stat-cards { display: flex; gap: 12px; margin: 15px 0; flex-wrap: wrap; }
+.stat-card { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 6px; padding: 10px 18px; text-align: center; }
+.stat-card .value { font-size: 22px; font-weight: bold; }
+.stat-card .label { font-size: 13px; color: #666; }
+{% endblock %}
+
+{% block content %}
+<div class="group-header">
+    <h2>Test Group {{ test_group.id }} — All Games</h2>
+    <div class="meta">
+        {{ test_group.description }}{% if test_group.branch %} · branch: {{ test_group.branch }}{% endif %}
+        · <a href="{% url 'results' %}">back to Results</a>
+    </div>
+</div>
+
+<div class="stat-cards">
+    <div class="stat-card"><div class="value">{{ wins }}</div><div class="label">Wins</div></div>
+    <div class="stat-card"><div class="value">{{ losses }}</div><div class="label">Losses</div></div>
+    <div class="stat-card"><div class="value">{{ win_rate }}%</div><div class="label">Win rate</div></div>
+    <div class="stat-card"><div class="value">{{ total }}</div><div class="label">Games</div></div>
+    <div class="stat-card"><div class="value">{{ opponents_label }}</div><div class="label">Opponent(s)</div></div>
+    <div class="stat-card"><div class="value">{{ map_names_label }}</div><div class="label">Map(s)</div></div>
+</div>
+
+<table>
+    <thead>
+        <tr>
+            <th>Match</th>
+            <th>Result</th>
+            <th>Test Bot</th>
+            <th>Opponent</th>
+            <th>Duration</th>
+            <th>Map</th>
+            <th>Started</th>
+            <th>Replay</th>
+            <th>Bot Log</th>
+            <th>Game Log</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for match in matches %}
+        <tr>
+            <td><strong>{{ match.id }}</strong></td>
+            <td class="{{ match.result|lower }}">{{ match.result }}</td>
+            <td>{{ match.test_bot.name }}</td>
+            <td>
+                {% if match.opponent_bot %}{{ match.opponent_bot.name }}{% if match.opponent_build %} ({{ match.opponent_build }}){% endif %}
+                {% elif match.replay_test %}replay test: {{ match.replay_test.name }}
+                {% else %}{{ match.opponent_race }} / {{ match.opponent_difficulty }} {{ match.opponent_build }}{% endif %}
+            </td>
+            <td>{{ match.duration_in_game_time|format_duration }}</td>
+            <td>{{ match.map_name }}</td>
+            <td>{{ match.start_timestamp|date:"m/d H:i" }}</td>
+            <td>
+                {% if match.has_replay %}
+                <a href="{% url 'serve_replay' match_id=match.id %}">download</a>
+                {% else %}—{% endif %}
+            </td>
+            <td>
+                {% if match.has_bot_log %}
+                <a href="{% url 'serve_aiarena_bot_log' match_id=match.id bot_name=match.test_bot_directory %}">bot log</a>
+                {% else %}—{% endif %}
+            </td>
+            <td>
+                {% if match.has_log %}
+                <a href="{% url 'serve_log' match_id=match.id %}">game log</a>
+                {% else %}—{% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

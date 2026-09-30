@@ -184,7 +184,7 @@ thead tr:nth-child(2) th { top: 41px; }
             {% for row in pivot_data %}
             <tr>
                 <td class="test-group-column"><strong>{{ row.test_bot_name }}</strong></td>
-                <td class="test-group-column" title="{{ test_groups|lookup:row.test_group_id }}"><strong>{{ row.test_group_id }}</strong></td>
+                <td class="test-group-column" title="{{ test_groups|lookup:row.test_group_id }}"><strong><a href="{% url 'test_group_detail' group_id=row.test_group_id %}">{{ row.test_group_id }}</a></strong></td>
                 <td class="narrow-column"><strong>{{ row.group_win_percentage }}</strong></td>
                 <td class="narrow-column"><strong>{{ row.avg_duration|format_duration }}</strong></td>
                 <td class="narrow-column"><strong>{{ row.difficulty }}</strong></td>

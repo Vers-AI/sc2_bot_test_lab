@@ -1,0 +1,68 @@
+{% extends "test_lab/base.html" %}
+
+{% block title %}Experiment Results - Test Lab{% endblock %}
+
+{% block extra_head %}
+<meta http-equiv="refresh" content="30">
+{% endblock %}
+
+{% block extra_css %}
+.exp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 16px; margin-bottom: 24px; }
+.exp-card { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; padding: 16px 20px; }
+.exp-card .cond { font-size: 13px; color: #6c757d; margin-bottom: 4px; }
+.exp-card .big { font-size: 42px; font-weight: bold; line-height: 1.1; }
+.exp-card .sub { font-size: 13px; color: #6c757d; margin-top: 6px; }
+.exp-card.cond-a .big { color: #007bff; }
+.exp-card.cond-b .big { color: #e83e8c; }
+.chart-panel { background: #fff; border: 1px solid #dee2e6; border-radius: 8px; padding: 18px 22px; margin-bottom: 22px; }
+.chart-panel h3 { margin-top: 0; font-size: 16px; color: #212529; }
+.legend { font-size: 12px; color: #495057; margin-top: 6px; }
+.swatch { display: inline-block; width: 11px; height: 11px; border-radius: 2px; margin-right: 4px; vertical-align: baseline; }
+.empty { color: #6c757d; font-style: italic; padding: 30px 0; text-align: center; }
+.refresh-note { font-size: 11px; color: #adb5bd; margin-top: 4px; }
+{% endblock %}
+
+{% block content %}
+<h2>Experiment Results</h2>
+<p class="refresh-note">Auto-refreshes every 30s · Defender survival rate per condition (Victory = survived)</p>
+
+{% if not stats %}
+<div class="empty">No completed experiment matches yet. Run games on UltraloveAIE_v2 (condition A) or UltraloveAIE_5.0.16_v2 (condition B) to populate this dashboard.</div>
+{% else %}
+
+<div class="exp-grid">
+  {% for cond, s in stats.items %}
+  <div class="exp-card {% if s.slug == 'A' %}cond-a{% elif s.slug == 'B' %}cond-b{% endif %}">
+    <div class="cond">{{ cond }}</div>
+    <div class="big">{{ s.survival_rate|floatformat:0 }}%</div>
+    <div class="sub">{{ s.victories }}W / {{ s.defeats }}L · {{ s.total }} games{% if s.errors %} · {{ s.errors }} errors{% endif %}</div>
+    <div class="sub">avg game {{ s.avg_duration|floatformat:0 }}s</div>
+  </div>
+  {% endfor %}
+</div>
+
+<div class="chart-panel">
+  <h3>Defender survival rate</h3>
+  {{ chart_bars|safe }}
+  <div class="legend">Share of decided games the defender survived (rush eliminated = survival). Elimination rule: zero hatcheries standing.</div>
+</div>
+
+{% if chart_trend %}
+<div class="chart-panel">
+  <h3>Cumulative survival rate over the run</h3>
+  {{ chart_trend|safe }}
+  <div class="legend">Running defender survival % as games accumulate — <span class="swatch" style="background:#007bff"></span>Condition A (pre-patch) · <span class="swatch" style="background:#e83e8c"></span>Condition B (5.0.16). Divergence between the lines is the experiment's answer.</div>
+</div>
+{% endif %}
+
+{% if chart_durations %}
+<div class="chart-panel">
+  <h3>Game durations</h3>
+  {{ chart_durations|safe }}
+  <div class="legend">Each dot one game; lanes per condition. Fast deaths = rush dominating; long games = defense holding.</div>
+</div>
+{% endif %}
+
+<p class="refresh-note">{{ total_matches }} completed matches in scope.</p>
+{% endif %}
+{% endblock %}
