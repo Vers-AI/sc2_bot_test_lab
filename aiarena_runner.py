@@ -1092,9 +1092,8 @@ def start_aiarena_match(
             )
 
     match_id = match.id
-    # In a mirror match, player 2 is the same bot as the test subject,
-    # so it needs the same custom Dockerfile. Launching it with the
-    # stock image crashes bots that rely on pre-installed dependencies.
+    # Mirror matches: opponent is the same bot — it needs the same custom
+    # Dockerfile (pre-installed deps) as the test subject, not the stock image.
     dockerfiles = (test_bot.dockerfile, opponent_bot.dockerfile if not is_mirror else test_bot.dockerfile)
     run_dir = _create_run_dir(match_id, dockerfiles=dockerfiles)
 

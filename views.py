@@ -1314,8 +1314,8 @@ def serve_replay(request, match_id):
 
     Previously tried to launch SC2Switcher locally via subprocess; that only
     works when the UI runs on the same machine as a StarCraft 2 install. The
-    lab now runs headless behind tailscale, so serve the replay file itself
-    and let the client open it in their own viewer.
+    lab is typically deployed headless behind a reverse proxy, so serve the
+    replay file itself and let the client open it in their own viewer.
     """
     from django.http import FileResponse
 

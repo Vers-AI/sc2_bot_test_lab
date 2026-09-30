@@ -1,25 +1,38 @@
-# test_lab
+# test_lab — a local test lab for StarCraft II bots
 
-Django app for automated StarCraft II bot testing. Runs matches via Docker
-using the [AI Arena local-play-bootstrap](https://github.com/aiarena/local-play-bootstrap)
-infrastructure and tracks results.
+A Django web app for running automated SC2 bot matches and tracking the results.
+It wraps the [AI Arena local-play-bootstrap](https://github.com/aiarena/local-play-bootstrap)
+infrastructure in Docker, so your bot plays in the same environment it uses on
+the [AI Arena ladder](https://aiarena.net) — but locally, under your control.
 
-Disclaimer: This is intended to work for all bot types but some types are untested.
-It's all very WIP so feel free to send a PR and I won't be too picky about merging it. 
+**What you get:**
 
-## Setup (existing Django project)
+- **Four match types** — vs Blizzard AI, vs custom bots (any aiarena-supported
+  type: Python, C++, Java, …), vs past versions of your own bot (git A/B), and
+  replay-continuation tests
+- **Test suites** — bundle matchups into suites (default: the 15 Blizzard AI
+  variants — 3 races × 5 builds) and run them with one click
+- **Tickets** — agent prompts for AI-assisted development, each ticket working
+  in its own git worktree, with tests triggered on commit
+- **Results, logs & replays** — every match records its result, full bot logs,
+  and replay download
+- **API** — `POST /api/trigger-tests/` to fire matches or suites from scripts,
+  git hooks, or CI
 
-If you're adding test_lab to an existing Django project instead of using
-the quickstart, follow these steps.
+Every match, suite run, and test group is keyed to the bot under test, so
+different bots keep completely separate experiment histories.
 
-### Database
+See [ROADMAP.md](ROADMAP.md) for where this is heading: regression verdicts,
+GitHub-native CI, and continuous deployment for bots.
 
-test_lab uses its own MySQL database (`sc2bot_test_lab_db_2`). Run migrations with:
+> This is intended to work for all bot types but some types are untested.
+> It's all very WIP so feel free to send a PR — I won't be too picky about merging it.
 
-```bash
-python manage.py migrate test_lab --database sc_bot_test_lab
-```
+## Requirements
 
+- **Docker** (running)
+- **Python 3.12+**
+- **StarCraft II maps** on the host (a directory of `.SC2Map` files)
 
 ## Quickstart (standalone setup)
 
@@ -124,6 +137,46 @@ docker compose -f test_lab/quickstart/docker-compose.yml down -v
 ```
 
 </details>
+
+#### Reverse-proxy / remote access (waitress + CSRF env vars)
+
+Django's built-in dev server cannot parse chunked transfer-encoding, which
+many reverse proxies (e.g. `tailscale serve`) use for POST requests — form
+submissions behind such a proxy will fail with `403 (CSRF token missing)`.
+For remote access, run a real WSGI server instead and opt in to forwarded
+headers:
+
+```bash
+pip install waitress
+
+# Example: expose at https://your-host.ts.net:8443/test_lab/ via `tailscale serve`
+TEST_LAB_CSRF_TRUSTED_ORIGINS="https://your-host.ts.net:8443" \
+TEST_LAB_USE_FORWARDED=1 \
+python -m waitress --listen=0.0.0.0:8000 test_lab.quickstart.wsgi:application
+```
+
+- `TEST_LAB_CSRF_TRUSTED_ORIGINS` — comma-separated list of proxy origins
+  trusted for CSRF (scheme + host + port must match exactly).
+- `TEST_LAB_USE_FORWARDED=1` — honor `X-Forwarded-Host` / `X-Forwarded-Proto`.
+
+Both default to unset, so local `runserver` setups are unaffected.
+
+## Adding to an existing Django project
+
+If you're adding test_lab to an existing Django project instead of using
+the quickstart, follow these steps.
+
+### Database
+
+test_lab uses its own MySQL database (the router in `quickstart/db_router.py`
+sends all test_lab models to the `sc_bot_test_lab` alias — define it in your
+project's settings). Run migrations with:
+
+```bash
+python manage.py migrate test_lab --database sc_bot_test_lab
+```
+
+## Using the app
 
 ### 6. Basic Configuration
 
