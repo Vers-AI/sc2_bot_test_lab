@@ -1288,6 +1288,24 @@ def test_group_detail(request, group_id):
     decided = wins + losses
     win_rate = f"{(wins / decided) * 100:.0f}" if decided else "-"
 
+    # Duration split: how long wins vs losses take (the two-population view)
+    def _fmt_s(seconds_list):
+        if not seconds_list:
+            return "-"
+        s = sorted(seconds_list)
+        n = len(s)
+        med = s[n // 2]
+        return f"{med // 60}:{med % 60:02d}"
+
+    win_durs = [m.duration_in_game_time for m in matches
+                if m.result == 'Victory' and m.duration_in_game_time]
+    loss_durs = [m.duration_in_game_time for m in matches
+                 if m.result == 'Defeat' and m.duration_in_game_time]
+    win_med = _fmt_s(win_durs)
+    loss_med = _fmt_s(loss_durs)
+    under_8 = sum(1 for d in loss_durs if d < 480)
+    under_8_pct = f"{(under_8 / len(loss_durs)) * 100:.0f}" if loss_durs else "-"
+
     opponent_names = sorted({
         (m.opponent_bot.name if m.opponent_bot else
          (m.replay_test.name if m.replay_test else f"{m.opponent_race} {m.opponent_difficulty}"))
@@ -1299,6 +1317,9 @@ def test_group_detail(request, group_id):
         'active_page': 'results',
         'test_group': group,
         'matches': matches,
+        'win_med': win_med,
+        'loss_med': loss_med,
+        'under_8_pct': under_8_pct,
         'wins': wins,
         'losses': losses,
         'win_rate': win_rate,
@@ -3492,31 +3513,42 @@ def _svg_survival_bars(stats):
 
 
 def _svg_duration_scatter(stats):
-    """Game-duration scatter, one lane per condition."""
+    """Win/loss duration split, two lanes per condition — shows the
+    two-population structure (fast losses vs slower wins) at a glance."""
     conds = sorted(stats.keys())
     if not conds:
         return ''
-    lane_h, pad, w = 60, 24, 600
+    lane_h, pad, w = 96, 30, 760
     max_dur = max((max(s['durations']) for s in stats.values() if s['durations']), default=480)
-    max_dur = max(max_dur, 120)
-    plot_w = w - pad - 130
+    max_dur = min(max_dur + 60, 1020)  # cap near the data, keep the interesting region readable
+    plot_w = w - pad - 185
     x_of = lambda d: pad + plot_w * (d / max_dur)
-    h = pad + lane_h * len(conds) + 30
-    parts = [f'<svg viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg" role="img" style="width:100%;max-width:600px;height:auto;">']
-    for t in range(0, max_dur + 1, 60):
+    h = pad + lane_h * len(conds) + 34
+    parts = [f'<svg viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg" role="img" style="width:100%;max-width:760px;height:auto;">']
+    parts.append(f'<text x="{pad}" y="{pad - 14}" font-size="13" font-weight="bold" fill="#212529">Game duration by outcome</text>')
+    for t in range(0, max_dur + 1, 120):
         x = x_of(t)
-        parts.append(f'<line x1="{x}" y1="{pad - 6}" x2="{x}" y2="{h - 26}" stroke="#dee2e6" stroke-dasharray="3,3"/>')
-        parts.append(f'<text x="{x}" y="{h - 10}" text-anchor="middle" font-size="10" fill="#6c757d">{t // 60}:{t % 60:02d}</text>')
+        parts.append(f'<line x1="{x}" y1="{pad}" x2="{x}" y2="{h - 30}" stroke="#dee2e6" stroke-dasharray="3,3"/>')
+        parts.append(f'<text x="{x}" y="{h - 12}" text-anchor="middle" font-size="11" fill="#6c757d">{t // 60}:{t % 60:02d}</text>')
     for i, c in enumerate(conds):
-        y_mid = pad + i * lane_h + lane_h // 2
-        color = '#007bff' if c.startswith('A') else '#e83e8c'
-        parts.append(f'<line x1="{pad}" y1="{y_mid}" x2="{pad + plot_w}" y2="{y_mid}" stroke="#ced4da"/>')
-        for d in stats[c]['durations']:
-            x = x_of(d)
-            won = None
-            parts.append(f'<circle cx="{x}" cy="{y_mid - 8}" r="5" fill="{color}" fill-opacity="0.75"/>')
-        parts.append(f'<text x="{pad + plot_w + 6}" y="{y_mid - 4}" font-size="12" fill="#212529">{c}</text>')
-        parts.append(f'<text x="{pad + plot_w + 6}" y="{y_mid + 12}" font-size="10" fill="#6c757d">avg {stats[c]["avg_duration"]:.0f}s</text>')
+        s = stats[c]
+        top = pad + i * lane_h
+        win_y, loss_y = top + 22, top + 58
+        parts.append(f'<rect x="{pad - 6}" y="{top + 2}" width="{plot_w + 12}" height="{lane_h - 12}" rx="8" fill="#f8f9fa" stroke="#e9ecef"/>')
+        parts.append(f'<line x1="{pad}" y1="{win_y}" x2="{pad + plot_w}" y2="{win_y}" stroke="#ced4da" stroke-opacity="0.7"/>')
+        parts.append(f'<line x1="{pad}" y1="{loss_y}" x2="{pad + plot_w}" y2="{loss_y}" stroke="#ced4da" stroke-opacity="0.7"/>')
+        for d in s['win_durations']:
+            parts.append(f'<circle cx="{x_of(d)}" cy="{win_y}" r="3" fill="#28a745" fill-opacity="0.5"/>')
+        for d in s['loss_durations']:
+            parts.append(f'<circle cx="{x_of(d)}" cy="{loss_y}" r="3" fill="#e83e8c" fill-opacity="0.55"/>')
+        lx = pad + plot_w + 10
+        parts.append(f'<circle cx="{lx}" cy="{win_y - 4}" r="4" fill="#28a745"/>')
+        parts.append(f'<text x="{lx + 9}" y="{win_y}" font-size="12" font-weight="bold" fill="#212529">wins</text>')
+        parts.append(f'<text x="{lx + 9}" y="{win_y + 14}" font-size="11" fill="#6c757d">med {s["med_win_fmt"]}</text>' if s['med_win_fmt'] else f'<text x="{lx + 9}" y="{win_y + 14}" font-size="11" fill="#6c757d">none</text>')
+        parts.append(f'<circle cx="{lx}" cy="{loss_y - 4}" r="4" fill="#e83e8c"/>')
+        parts.append(f'<text x="{lx + 9}" y="{loss_y}" font-size="12" font-weight="bold" fill="#212529">losses</text>')
+        parts.append(f'<text x="{lx + 9}" y="{loss_y + 14}" font-size="11" fill="#6c757d">med {s["med_loss_fmt"]}</text>' if s['med_loss_fmt'] else f'<text x="{lx + 9}" y="{loss_y + 14}" font-size="11" fill="#6c757d">none</text>')
+        parts.append(f'<text x="{pad}" y="{top + 16}" font-size="12" font-weight="bold" fill="#495057">{c}</text>')
     parts.append('</svg>')
     return ''.join(parts)
 
@@ -3559,6 +3591,7 @@ def experiment_results_page(request):
 
     matches = list(
         Match.objects.exclude(result__in=['Pending', 'Queued'])
+        .exclude(test_group_id=-1)  # ad-hoc/manual runs stay out of the experiment conditions
         .order_by('id')
         .values('id', 'map_name', 'result', 'duration_in_game_time', 'start_timestamp')
     )
@@ -3570,6 +3603,7 @@ def experiment_results_page(request):
             continue
         s = stats.setdefault(cond, {
             'victories': 0, 'defeats': 0, 'errors': 0, 'durations': [],
+            'win_durations': [], 'loss_durations': [],
             'outcomes': [], 'total': 0, 'slug': cond[0],
         })
         s['total'] += 1
@@ -3584,11 +3618,27 @@ def experiment_results_page(request):
         dur = m['duration_in_game_time'] or 0
         if dur:
             s['durations'].append(dur)
+            if m['result'] == 'Victory':
+                s['win_durations'].append(dur)
+            elif m['result'] == 'Defeat':
+                s['loss_durations'].append(dur)
+
+    def _med(xs):
+        if not xs:
+            return None
+        s = sorted(xs)
+        return s[len(s) // 2]
 
     for s in stats.values():
         s['decided'] = s['victories'] + s['defeats']
         s['survival_rate'] = (100.0 * s['victories'] / s['decided']) if s['decided'] else 0.0
         s['avg_duration'] = sum(s['durations']) / len(s['durations']) if s['durations'] else 0.0
+        s['med_win'] = _med(s['win_durations'])
+        s['med_loss'] = _med(s['loss_durations'])
+        under8 = sum(1 for d in s['loss_durations'] if d < 480)
+        s['fast_loss_pct'] = (100.0 * under8 / len(s['loss_durations'])) if s['loss_durations'] else None
+        s['med_win_fmt'] = f"{s['med_win'] // 60}:{s['med_win'] % 60:02d}" if s['med_win'] else None
+        s['med_loss_fmt'] = f"{s['med_loss'] // 60}:{s['med_loss'] % 60:02d}" if s['med_loss'] else None
 
     context = {
         'active_page': 'experiment',

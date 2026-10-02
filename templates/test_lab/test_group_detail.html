@@ -34,6 +34,9 @@
     <div class="stat-card"><div class="value">{{ total }}</div><div class="label">Games</div></div>
     <div class="stat-card"><div class="value">{{ opponents_label }}</div><div class="label">Opponent(s)</div></div>
     <div class="stat-card"><div class="value">{{ map_names_label }}</div><div class="label">Map(s)</div></div>
+    <div class="stat-card"><div class="value">{{ win_med }}</div><div class="label">Median win length</div></div>
+    <div class="stat-card"><div class="value">{{ loss_med }}</div><div class="label">Median loss length</div></div>
+    <div class="stat-card"><div class="value">{% if under_8_pct == "-" %}-{% else %}{{ under_8_pct }}%{% endif %}</div><div class="label">Losses under 8:00</div></div>
 </div>
 
 <table>

@@ -37,6 +37,7 @@
     <div class="big">{{ s.survival_rate|floatformat:0 }}%</div>
     <div class="sub">{{ s.victories }}W / {{ s.defeats }}L · {{ s.total }} games{% if s.errors %} · {{ s.errors }} errors{% endif %}</div>
     <div class="sub">avg game {{ s.avg_duration|floatformat:0 }}s</div>
+    <div class="sub">{% if s.med_win_fmt %}med win {{ s.med_win_fmt }}{% else %}no wins{% endif %} · {% if s.med_loss_fmt %}med loss {{ s.med_loss_fmt }}{% else %}no losses{% endif %}{% if s.fast_loss_pct is not None %} · {{ s.fast_loss_pct|floatformat:0 }}% losses &lt;8:00{% endif %}</div>
   </div>
   {% endfor %}
 </div>
