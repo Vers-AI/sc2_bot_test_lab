@@ -51,6 +51,19 @@ _BASE_FILES = (
     'Dockerfile.proxy_fwd', 'entrypoint_proxy_fwd.sh',
 )
 
+
+def _docker_image_exists(image_ref: str) -> bool:
+    """Return True when *image_ref* exists in the local docker store."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ['docker', 'image', 'inspect', image_ref],
+            capture_output=True, timeout=15,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
 # Maps available for aiarena matches (same as the test_lab map pool)
 AIARENA_MAP_LIST = [
     "PersephoneAIE_v4",
@@ -458,11 +471,32 @@ def _write_compose_override(
         if not effective_dockerfile and bot2_type != 'python':
             effective_dockerfile = 'Dockerfile.proxy_fwd'
         if effective_dockerfile:
-            lines += [
-                '    build:',
-                '      context: .',
-                f'      dockerfile: {effective_dockerfile}',
-            ]
+            prebuilt = 'lab-aiarena-bot:proxy_fwd' if (
+                effective_dockerfile == 'Dockerfile.proxy_fwd'
+            ) else None
+            if prebuilt and _docker_image_exists(prebuilt):
+                # Reuse one pre-built image instead of rebuilding it
+                # in every per-match run directory (each build dumps
+                # several GB into BuildKit cache — see 2026-10-08).
+                lines.append(f'    image: {prebuilt}')
+            else:
+                lines += [
+                    '    build:',
+                    '      context: .',
+                    f'      dockerfile: {effective_dockerfile}',
+                ]
+            if effective_dockerfile == 'Dockerfile.proxy_fwd':
+                # Some compiled bots (BWAPI-era SC2API builds like
+                # MicroMachine) ignore --LadderServer and hardwire
+                # localhost:<port>.  The proxy_fwd image ships a socat
+                # bridge for exactly this case; activate it (OFF by
+                # default in the stock entrypoint).
+                lines += [
+                    '    environment:',
+                    '      - "PROXY_FWD_ENABLE=1"',
+                    '      - "PROXY_FWD_PORT=8080"',
+                    '      - "PROXY_FWD_DELAY=0"',
+                ]
         lines.append('    volumes:')
         if opponent_bot is not None:
             lines += _opponent_volume_mounts(opponent_bot, bot2_name)
