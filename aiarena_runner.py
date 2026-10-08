@@ -496,6 +496,7 @@ def _write_compose_override(
                     '      - "PROXY_FWD_ENABLE=1"',
                     '      - "PROXY_FWD_PORT=8080"',
                     '      - "PROXY_FWD_DELAY=0"',
+                    f'      - "SHIM_BOT_NAME={bot2_name}"',
                 ]
         lines.append('    volumes:')
         if opponent_bot is not None:

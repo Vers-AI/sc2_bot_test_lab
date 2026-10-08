@@ -1,23 +1,25 @@
 #!/bin/sh
-# Extended bot_controller entrypoint.
+# Extended bot_controller entrypoint for compiled bots.
 #
-# This image installs extra system packages (e.g. socat and its deps)
-# that some compiled bots need for networking to work correctly inside
-# the container.
-#
-# If PROXY_FWD_ENABLE=1 is set, socat forwards localhost:<port> to
-# proxy_controller:<port> so bots that ignore --LadderServer and
-# connect to localhost can still reach the proxy.  This is OFF by
-# default — the image is mainly used for the extra libraries it
-# provides.
+# When PROXY_FWD_ENABLE=1, the SC2API protocol shim
+# (protocol_shim.py) listens on localhost:${PROXY_FWD_PORT} and
+# bridges to the real proxy controller. This serves two needs of
+# Churchill-era compiled bots (MicroMachine and similar):
+#   1. they hardwire localhost:<port> for the ladder connection
+#      (ignoring --LadderServer), and
+#   2. they open with a RequestPing and block until it is answered,
+#      which the aiarena proxy never does pre-join.
+# The shim answers pings locally, injects the player name into the
+# JoinGame request, and relays everything else transparently. It also
+# works fine for compiled bots that speak the aiarena flow natively.
 
 if [ "${PROXY_FWD_ENABLE:-0}" = "1" ]; then
     PORT="${PROXY_FWD_PORT:-8080}"
-    DELAY="${PROXY_FWD_DELAY:-5}"
+    DELAY="${PROXY_FWD_DELAY:-0}"
     if [ "$DELAY" -gt 0 ] 2>/dev/null; then
-        ( sleep "$DELAY" && exec socat TCP-LISTEN:"${PORT}",fork,reuseaddr TCP:proxy_controller:"${PORT}" ) &
+        ( sleep "$DELAY" && SHIM_LISTEN_PORT="$PORT" python3 /shim/protocol_shim.py ) &
     else
-        socat TCP-LISTEN:"${PORT}",fork,reuseaddr TCP:proxy_controller:"${PORT}" &
+        SHIM_LISTEN_PORT="$PORT" python3 /shim/protocol_shim.py &
     fi
 fi
 exec ./bot_controller "$@"
