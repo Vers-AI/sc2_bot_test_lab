@@ -216,25 +216,29 @@ thead tr:nth-child(2) th { top: 41px; }
 
 {% elif active_tab == 'compare' %}
 {# ==================== COMPARE TAB ==================== #}
-<p style="color:#495057;margin-top:0;">Pick any two test groups to compare side by side — every stat derives from the groups' own matches. Works for any experiment: a bot change vs its baseline, two opponents, two maps.</p>
-<form method="get" action="" style="display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;margin-bottom:18px;">
+<p style="color:#495057;margin-top:0;">Pick any two test groups to compare side by side: every stat derives from the groups' own matches. Works for any experiment: a bot change vs its baseline, two opponents, two maps.</p>
+<form method="get" action="" style="display:flex;flex-wrap:wrap;gap:12px 16px;align-items:flex-end;margin-bottom:18px;">
     <input type="hidden" name="tab" value="compare">
-    <label style="font-weight:bold;color:#495057;">Group A</label>
-    <select name="a" style="padding:6px 10px;">
-        {% for g in compare_groups %}
-        {% if g.done %}
-        <option value="{{ g.id }}" {% if g.id == compare_a %}selected{% endif %}>#{{ g.id }} — {{ g.description|default:"" }} ({{ g.done }} games)</option>
-        {% endif %}
-        {% endfor %}
-    </select>
-    <label style="font-weight:bold;color:#495057;">Group B</label>
-    <select name="b" style="padding:6px 10px;">
-        {% for g in compare_groups %}
-        {% if g.done %}
-        <option value="{{ g.id }}" {% if g.id == compare_b %}selected{% endif %}>#{{ g.id }} — {{ g.description|default:"" }} ({{ g.done }} games)</option>
-        {% endif %}
-        {% endfor %}
-    </select>
+    <div style="display:flex;flex-direction:column;gap:4px;">
+        <label for="compare-a" style="font-weight:bold;color:#495057;font-size:13px;">Group A</label>
+        <select id="compare-a" name="a" style="padding:6px 10px;min-width:280px;max-width:480px;">
+            {% for g in compare_groups %}
+            {% if g.done %}
+            <option value="{{ g.id }}" {% if g.id == compare_a %}selected{% endif %}>#{{ g.id }} - {{ g.description|default:"" }} ({{ g.done }} games)</option>
+            {% endif %}
+            {% endfor %}
+        </select>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:4px;">
+        <label for="compare-b" style="font-weight:bold;color:#495057;font-size:13px;">Group B</label>
+        <select id="compare-b" name="b" style="padding:6px 10px;min-width:280px;max-width:480px;">
+            {% for g in compare_groups %}
+            {% if g.done %}
+            <option value="{{ g.id }}" {% if g.id == compare_b %}selected{% endif %}>#{{ g.id }} - {{ g.description|default:"" }} ({{ g.done }} games)</option>
+            {% endif %}
+            {% endfor %}
+        </select>
+    </div>
     <button type="submit" style="padding:6px 16px;">Compare</button>
 </form>
 

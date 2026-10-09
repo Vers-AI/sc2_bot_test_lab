@@ -3485,15 +3485,15 @@ def _svg_survival_bars(stats):
     conds = sorted(stats.keys())
     if not conds:
         return ''
-    row_h, label_w, bar_max, pad = 44, 150, 420, 10
+    row_h, label_w, bar_max, pad = 44, 170, 420, 10
     h = pad * 2 + row_h * len(conds)
-    parts = [f'<svg viewBox="0 0 600 {h}" xmlns="http://www.w3.org/2000/svg" role="img" style="width:100%;max-width:600px;height:auto;">']
+    parts = [f'<svg viewBox="0 0 700 {h}" xmlns="http://www.w3.org/2000/svg" role="img" style="width:100%;max-width:700px;height:auto;">']
     for i, c in enumerate(conds):
         y = pad + i * row_h
         s = stats[c]
         pct = s['survival_rate']
         color = '#007bff' if c.startswith('A') else '#e83e8c'
-        parts.append(f'<text x="{label_w - 8}" y="{y + 18}" text-anchor="end" font-size="13" fill="#212529">{c}</text>')
+        parts.append(f'<text x="{label_w - 8}" y="{y + 18}" text-anchor="end" font-size="13" fill="#212529">{s.get('short', c)}</text>')
         parts.append(f'<rect x="{label_w}" y="{y}" width="{bar_max}" height="28" rx="4" fill="#e9ecef"/>')
         w = max(2, int(bar_max * pct / 100))
         parts.append(f'<rect x="{label_w}" y="{y}" width="{w}" height="28" rx="4" fill="{color}"/>')
@@ -3539,7 +3539,7 @@ def _svg_duration_scatter(stats):
         parts.append(f'<circle cx="{lx}" cy="{loss_y - 4}" r="4" fill="#e83e8c"/>')
         parts.append(f'<text x="{lx + 9}" y="{loss_y}" font-size="12" font-weight="bold" fill="#212529">losses</text>')
         parts.append(f'<text x="{lx + 9}" y="{loss_y + 14}" font-size="11" fill="#6c757d">med {s["med_loss_fmt"]}</text>' if s['med_loss_fmt'] else f'<text x="{lx + 9}" y="{loss_y + 14}" font-size="11" fill="#6c757d">none</text>')
-        parts.append(f'<text x="{pad}" y="{top + 16}" font-size="12" font-weight="bold" fill="#495057">{c}</text>')
+        parts.append(f'<text x="{pad}" y="{top + 16}" font-size="12" font-weight="bold" fill="#495057">{s.get('short', c)}</text>')
     parts.append('</svg>')
     return ''.join(parts)
 
@@ -3661,6 +3661,13 @@ def _get_compare_context(request):
                     s['win_durations'].append(dur)
                 elif m['result'] == 'Defeat':
                     s['loss_durations'].append(dur)
+
+        # Short label for the SVG charts: group descriptions run long
+        # (100+ chars) and overflow the fixed chart geometry that was
+        # designed for short condition labels. Full labels stay in the
+        # HTML stat cards, which wrap fine.
+        _s = (desc or f'Group {gid}')
+        s['short'] = f'{slot}: ' + (_s if len(_s) <= 20 else _s[:19] + '…')
 
         s['decided'] = s['victories'] + s['defeats']
         s['survival_rate'] = (100.0 * s['victories'] / s['decided']) if s['decided'] else 0.0
