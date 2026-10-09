@@ -10,6 +10,8 @@ from datetime import datetime
 from tkinter import filedialog
 
 from django.contrib import messages
+import html
+
 from django.db.models import Count, Max, Min, Q
 from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
@@ -3511,7 +3513,7 @@ def _svg_duration_scatter(stats):
         return ''
     lane_h, pad, w = 96, 30, 760
     max_dur = max((max(s['durations']) for s in stats.values() if s['durations']), default=480)
-    max_dur = min(max_dur + 60, 1020)  # cap near the data, keep the interesting region readable
+    max_dur = max_dur + 60  # scale to the data: works for rush and macro groups alike
     plot_w = w - pad - 185
     x_of = lambda d: pad + plot_w * (d / max_dur)
     h = pad + lane_h * len(conds) + 34
@@ -3596,7 +3598,7 @@ def _get_compare_context(request):
 
     groups = list(
         TestGroup.objects.order_by('-id')
-        .values('id', 'description')[:60]
+        .values('id', 'description')[:200]
     )
     done_counts = dict(
         Match.objects
@@ -3667,7 +3669,10 @@ def _get_compare_context(request):
         # designed for short condition labels. Full labels stay in the
         # HTML stat cards, which wrap fine.
         _s = (desc or f'Group {gid}')
-        s['short'] = f'{slot}: ' + (_s if len(_s) <= 20 else _s[:19] + '…')
+        _short = _s if len(_s) <= 20 else _s[:19] + '…'
+        # SVG charts are rendered with |safe: escape free-text
+        # descriptions here (chars like < & " would break the markup)
+        s['short'] = f'{slot}: ' + html.escape(_short, quote=False)
 
         s['decided'] = s['victories'] + s['defeats']
         s['survival_rate'] = (100.0 * s['victories'] / s['decided']) if s['decided'] else 0.0
