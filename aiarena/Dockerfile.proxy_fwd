@@ -1,16 +1,26 @@
-# Extends the stock bot controller for compiled (C++, Go, .NET) bots:
-# extra system libraries plus the SC2API protocol shim (protocol_shim.py)
-# that bridges Churchill-era ladder clients to the aiarena proxy.
+# Extended bot controller for Churchill-era compiled bots.
+#
+# Those bots hardwire 127.0.0.1:<port>. The proxy identifies players by
+# the source port of the bot's OWN socket, so the only working fix is
+# to keep the bot's socket and rewrite its destination. connect_redirect.so
+# (LD_PRELOAD) does exactly that; the entrypoint resolves the proxy IP
+# and exports the env.
+#
+# Built multi-stage against the same Debian release as the base image
+# (bookworm, glibc 2.36) so the preload is ABI-safe.
+
+FROM debian:bookworm-slim AS build
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY connect_redirect.c /src/connect_redirect.c
+RUN gcc -shared -fPIC -O2 -Wall -o /src/connect_redirect.so /src/connect_redirect.c -ldl
 
 FROM aiarena/arenaclient-bot:v0.8.0
 
 USER root
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends socat \
-    && rm -rf /var/lib/apt/lists/*
-
+COPY --from=build /src/connect_redirect.so /shim/connect_redirect.so
 COPY entrypoint_proxy_fwd.sh /entrypoint_proxy_fwd.sh
-COPY protocol_shim.py /shim/protocol_shim.py
 RUN chmod +x /entrypoint_proxy_fwd.sh
 
 ENTRYPOINT ["/entrypoint_proxy_fwd.sh"]
