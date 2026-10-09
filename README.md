@@ -212,6 +212,25 @@ After finishing the work, the agent is instructed to commit and trigger the tick
 
 `Config > Prompt Templates` Allows for creating custom templates for working on specific bots. There are forms for creating and editing them but they are stored in actual files so it's probably easier to edit manage them with a normal text editor. In the app you can register them to specific bots. When creating a ticket you can choose from registered templates for the bot or, if there are none, the default prompt.
 
+### 11. Define your own experiment (Compare)
+
+Any two test groups can be compared side by side on the
+**Results → Compare** tab — every stat derives from the groups' own
+match data, so it works for any experiment:
+
+1. **Run your two conditions.** Each condition is just a test group:
+   use a description that names the condition (e.g. "MyBot vs
+   Clicadinha — rush build" vs "MyBot vs Clicadinha — macro build").
+   Matches land in their own group automatically when triggered as a
+   suite, or set `description` per match via the API.
+2. **Open Results → Compare** and pick the two groups from the
+   dropdowns (or link directly: `/test_lab/?tab=compare&a=3&b=4`).
+
+You get win rate, W/L record, average + median game duration split by
+outcome, fast-loss %, cumulative win-rate trend, and the per-game
+duration scatter — the same dashboard for any pairing, not just the
+rush-defense experiment the lab was originally built around.
+
 ---
 ### Git Commit Hook
 To automatically trigger a test suite on every commit, add a `post-commit`

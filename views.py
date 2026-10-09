@@ -1637,6 +1637,8 @@ def results_page(request):
 
     if active_tab == 'maps':
         context.update(_get_map_breakdown_context(request))
+    elif active_tab == 'compare':
+        context.update(_get_compare_context(request))
     else:
         active_tab = 'test-groups'
         context['active_tab'] = active_tab
@@ -3476,19 +3478,8 @@ def merge_branch(request, ticket_id):
 
 
 # ---------------------------------------------------------------------------
-# Experiment Results — visual dashboard for A/B condition experiments
-# ---------------------------------------------------------------------------
-def _condition_of(map_name):
-    """Map experiment maps to condition labels (A = pre-patch, B = 5.0.16)."""
-    if not map_name:
-        return None
-    if '5.0.16' in map_name:
-        return 'B: Patch 5.0.16'
-    if map_name.startswith('UltraloveAIE'):
-        return 'A: Pre-patch'
-    return None
-
-
+# Compare (Results tab) - A/B test-group comparison
+# ----------------------------------------------------------------------
 def _svg_survival_bars(stats):
     """Horizontal survival-rate comparison bars (0-100%)."""
     conds = sorted(stats.keys())
@@ -3585,51 +3576,92 @@ def _svg_trend(stats):
     return ''.join(parts)
 
 
-def experiment_results_page(request):
-    """Visual dashboard for A/B condition experiments (video-friendly)."""
-    from test_lab.models import Match
+def _get_compare_context(request):
+    """Compare tab: pick any two test groups as A/B.
 
-    matches = list(
-        Match.objects.exclude(result__in=['Pending', 'Queued'])
-        .exclude(test_group_id=-1)  # ad-hoc/manual runs stay out of the experiment conditions
-        .order_by('id')
-        .values('id', 'map_name', 'result', 'duration_in_game_time', 'start_timestamp')
+    All stats derive from the groups' own match data — no map-name or
+    condition coupling. Generalizes the old hard-coded experiment
+    dashboard: any two runs can be compared (a bot change vs its
+    baseline, two opponents, two maps, anything).
+    """
+    from test_lab.models import Match, TestGroup
+
+    def _gid(param):
+        try:
+            return int(request.GET.get(param, ''))
+        except (TypeError, ValueError):
+            return None
+
+    a_id, b_id = _gid('a'), _gid('b')
+
+    groups = list(
+        TestGroup.objects.order_by('-id')
+        .values('id', 'description')[:60]
     )
+    done_counts = dict(
+        Match.objects
+        .exclude(result__in=['Pending', 'Queued'])
+        .exclude(test_group_id=-1)  # ad-hoc/manual runs stay out
+        .values('test_group_id')
+        .annotate(n=Count('id'))
+        .values_list('test_group_id', 'n')
+    )
+    for g in groups:
+        g['done'] = done_counts.get(g['id'], 0)
 
-    stats = {}
-    for m in matches:
-        cond = _condition_of(m['map_name'])
-        if cond is None:
-            continue
-        s = stats.setdefault(cond, {
-            'victories': 0, 'defeats': 0, 'errors': 0, 'durations': [],
-            'win_durations': [], 'loss_durations': [],
-            'outcomes': [], 'total': 0, 'slug': cond[0],
-        })
-        s['total'] += 1
-        if m['result'] == 'Victory':
-            s['victories'] += 1
-            s['outcomes'].append(True)
-        elif m['result'] == 'Defeat':
-            s['defeats'] += 1
-            s['outcomes'].append(False)
-        else:
-            s['errors'] += 1
-        dur = m['duration_in_game_time'] or 0
-        if dur:
-            s['durations'].append(dur)
-            if m['result'] == 'Victory':
-                s['win_durations'].append(dur)
-            elif m['result'] == 'Defeat':
-                s['loss_durations'].append(dur)
+    if a_id is None or b_id is None:
+        # Default: the two most recent groups with completed matches
+        with_matches = [g['id'] for g in groups if g['done'] > 0]
+        if a_id is None and len(with_matches) >= 1:
+            a_id = with_matches[0]
+        if b_id is None and len(with_matches) >= 2:
+            b_id = with_matches[1]
 
     def _med(xs):
         if not xs:
             return None
-        s = sorted(xs)
-        return s[len(s) // 2]
+        xs = sorted(xs)
+        return xs[len(xs) // 2]
 
-    for s in stats.values():
+    stats = {}
+    for slot, gid in (('A', a_id), ('B', b_id)):
+        if gid is None:
+            continue
+        if not any(g['id'] == gid for g in groups):
+            continue
+        desc = next(g['description'] for g in groups if g['id'] == gid)
+        label = f'{slot}: {desc}' if desc else f'{slot}: Group {gid}'
+
+        matches = list(
+            Match.objects
+            .filter(test_group_id=gid)
+            .exclude(result__in=['Pending', 'Queued'])
+            .order_by('id')
+            .values('id', 'result', 'duration_in_game_time')
+        )
+        s = {
+            'victories': 0, 'defeats': 0, 'errors': 0, 'durations': [],
+            'win_durations': [], 'loss_durations': [],
+            'outcomes': [], 'total': 0, 'slug': slot,
+        }
+        for m in matches:
+            s['total'] += 1
+            if m['result'] == 'Victory':
+                s['victories'] += 1
+                s['outcomes'].append(True)
+            elif m['result'] == 'Defeat':
+                s['defeats'] += 1
+                s['outcomes'].append(False)
+            else:
+                s['errors'] += 1
+            dur = m['duration_in_game_time'] or 0
+            if dur:
+                s['durations'].append(dur)
+                if m['result'] == 'Victory':
+                    s['win_durations'].append(dur)
+                elif m['result'] == 'Defeat':
+                    s['loss_durations'].append(dur)
+
         s['decided'] = s['victories'] + s['defeats']
         s['survival_rate'] = (100.0 * s['victories'] / s['decided']) if s['decided'] else 0.0
         s['avg_duration'] = sum(s['durations']) / len(s['durations']) if s['durations'] else 0.0
@@ -3639,13 +3671,15 @@ def experiment_results_page(request):
         s['fast_loss_pct'] = (100.0 * under8 / len(s['loss_durations'])) if s['loss_durations'] else None
         s['med_win_fmt'] = f"{s['med_win'] // 60}:{s['med_win'] % 60:02d}" if s['med_win'] else None
         s['med_loss_fmt'] = f"{s['med_loss'] // 60}:{s['med_loss'] % 60:02d}" if s['med_loss'] else None
+        stats[label] = s
 
-    context = {
-        'active_page': 'experiment',
+    return {
+        'compare_groups': groups,
+        'compare_a': a_id,
+        'compare_b': b_id,
         'stats': stats,
-        'total_matches': len(matches),
         'chart_bars': _svg_survival_bars(stats),
         'chart_durations': _svg_duration_scatter(stats),
         'chart_trend': _svg_trend(stats),
+        'total_matches': sum(s['total'] for s in stats.values()),
     }
-    return render(request, 'test_lab/experiment_results.html', context)

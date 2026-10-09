@@ -6,7 +6,6 @@ urlpatterns = [
     # Top-level pages
     path('', views.results_page, name='results'),
     path('run-match/', views.run_match_page, name='run_match'),
-    path('experiment/', views.experiment_results_page, name='experiment_results'),
     path('config/', views.config_page, name='config_page'),
     path('custom/', views.custom_page, name='custom_page'),
 
