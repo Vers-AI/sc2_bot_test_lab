@@ -21,7 +21,14 @@ logger = logging.getLogger('test_lab')
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(SCRIPT_DIR)))
-WORKTREE_BASE_DIR = os.path.join(_REPO_ROOT, 'bot', 'worktrees')
+# Deployment override: the default assumes the original chadspratt layout where
+# _REPO_ROOT is writable by the app user. On hosts where it is not (e.g. the
+# forge layout where /mnt/forge is root-owned), set TEST_LAB_WORKTREE_BASE_DIR
+# to a writable directory; worktrees for branch-based testing live there.
+WORKTREE_BASE_DIR = os.environ.get(
+    'TEST_LAB_WORKTREE_BASE_DIR',
+    os.path.join(_REPO_ROOT, 'bot', 'worktrees'),
+)
 
 
 def _sanitize_branch_name(branch: str) -> str:
