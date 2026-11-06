@@ -287,7 +287,7 @@ JSON body:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `repo_url` | string | **required** | Repo whose branch is under test — must match the registered test bot's source repository |
-| `branch` | string | **required** | Branch to test (worktree created/reused by the regular branch machinery) |
+| `branch` | string | **required** | Branch to test (worktree created/reused by the regular branch machinery, with its submodules checked out) |
 | `test_bot_id` | int | **required** | Custom bot ID for Player 1 (the test subject) |
 | `opponent_bot_ids` | list[int] | **required** | Roster opponents for the series |
 | `games_per_opponent` | int | `3` | Games per opponent, per series |
@@ -297,14 +297,27 @@ Returns `{"run_id": <test_group_id>}` immediately — the games are played in
 the background.  One gate run runs lab-wide at a time: a second request
 gets `409 {"status": "busy", "run_id": <active_run_id>}`.
 
+The worktree of the branch and of the baseline is prepared with
+`git submodule update --init --recursive`: `git worktree add` does not check
+out submodules, so a bot that imports a pinned submodule would crash on
+import.  A submodule checkout that fails aborts the trigger with a clear
+error instead of starting a series that can only crash.
+
 ### `GET /test_lab/api/gate-status/<run_id>/` (lab bridge)
 
 Same token header.  Returns the run status (`pending` / `running` /
 `complete`), the `noise_band` rule the verdict was computed with, the
-`verdict` (`pass` / `fail`) once the run is complete, and the raw
-per-opponent results of both the branch series and the baseline series
-(wins, losses, durations, game list) so a caller can apply its own
-judging.
+`verdict` (`pass` / `fail` / `invalid`) once the run is complete, and the
+raw per-opponent results of both the branch series and the baseline series
+(wins, losses, crash counts, durations, game list) so a caller can apply
+its own judging.
+
+`invalid` means the run could not be judged: a series crashed in more than
+half of its games, so the comparison says nothing about the branch (a
+baseline that crashed every game would otherwise look like a baseline the
+branch merely failed to beat, and the run would be judged `pass`).  The
+crash counts of both sides are in the payload (`branch.crashes` /
+`baseline.crashes`).
 
 ### Running the tests
 

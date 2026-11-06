@@ -1423,7 +1423,9 @@ def api_trigger_gate(request):
 
     # --- Worktrees --------------------------------------------------------
     # The branch and the baseline each get their own checkout, created or
-    # reused exactly like the existing branch machinery does.
+    # reused exactly like the existing branch machinery does.  The
+    # submodules of a checkout are prepared as well, so the bot can be
+    # started from it.
     try:
         branch_source = worktrees.get_or_create_worktree(test_bot.source_path, branch)
         baseline_source = worktrees.get_or_create_worktree(test_bot.source_path, baseline)
@@ -1432,6 +1434,15 @@ def api_trigger_gate(request):
         test_group.delete()
         return JsonResponse(
             {'status': 'error', 'message': f'Invalid branch: {e}'}, status=400,
+        )
+    except worktrees.WorktreeError as e:
+        run.delete()
+        test_group.delete()
+        logger.exception('Gate trigger: the checkout could not be prepared')
+        return JsonResponse(
+            {'status': 'error',
+             'message': f'Could not prepare the checkout: {e}'},
+            status=500,
         )
 
     baseline_group = TestGroup.objects.create(
@@ -1463,10 +1474,13 @@ def api_gate_status(request, run_id):
 
     Returns JSON:
       - status: "pending" | "running" | "complete"
-      - verdict: "pass" | "fail" (present when the run is complete)
+      - verdict: "pass" | "fail" | "invalid" (present when the run is
+        complete; "invalid" means a series crashed so often that the
+        comparison cannot be judged)
       - noise_band: the rule the verdict was computed with
       - results: per-opponent raw results of the branch series and of the
-        baseline series, so a caller can apply its own judging
+        baseline series (including the crash counts), so a caller can
+        apply its own judging
     """
     if not gate.bridge_token_configured():
         return JsonResponse(

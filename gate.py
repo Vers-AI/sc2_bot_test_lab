@@ -13,7 +13,8 @@ Contents:
 
 * the shared bridge token check,
 * the lab-wide concurrency lock (one gate run at a time),
-* the noise-band verdict computation (pure functions, unit tested),
+* the noise-band verdict computation and the crash-rate invalidation
+  (pure functions, unit tested),
 * the background launcher that plays the branch and baseline series.
 """
 
@@ -42,6 +43,12 @@ BRIDGE_TOKEN_HEADERS = ('X-Lab-Bridge-Token', 'X-Bridge-Token')
 #: A branch series passes when it wins no more than this many games more or
 #: fewer than the same series on the baseline ref.
 NOISE_BAND_TOLERANCE = 1
+
+#: A series in which one side crashes in more than this share of its games
+#: carries no information about the bot's play: a crashed game would
+#: otherwise count as a lost game, and two sides that both crashed look
+#: like a tie.  Such a run is reported as ``invalid`` instead of pass/fail.
+CRASH_RATE_LIMIT = 0.5
 
 #: Defaults for the trigger endpoint.
 DEFAULT_GAMES_PER_OPPONENT = 3
@@ -188,21 +195,87 @@ def evaluate_noise_band(
     return verdict, details
 
 
+def evaluate_verdict(
+    branch: dict[int, dict],
+    baseline: dict[int, dict],
+    tolerance: int = NOISE_BAND_TOLERANCE,
+) -> tuple[str, list[dict]]:
+    """Compare the two series and return ``(verdict, details)``.
+
+    *branch* and *baseline* map an opponent id to a series summary (the
+    dict produced by :func:`summarize_series`).
+
+    The verdict is ``'pass'`` when every opponent stays inside the noise
+    band, ``'fail'`` when one does not and ``'invalid'`` when a series
+    crashed so often that the comparison says nothing about the branch.
+    A crashed series would otherwise be counted as a lost series, and a
+    series where one side crashed every game looks exactly like a series
+    where the branch simply won no more games than the baseline — a
+    false pass.  ``'invalid'`` therefore wins over both other verdicts.
+
+    The details carry the crash counts and rates of both sides, so the
+    caller can see *why* a run was invalidated.
+    """
+    branch_wins = {
+        opponent_id: int(summary.get('wins', 0))
+        for opponent_id, summary in branch.items()
+    }
+    baseline_wins = {
+        opponent_id: int(summary.get('wins', 0))
+        for opponent_id, summary in baseline.items()
+    }
+    verdict, details = evaluate_noise_band(branch_wins, baseline_wins, tolerance)
+
+    for detail in details:
+        opponent_id = detail['opponent_id']
+        branch_summary = branch.get(opponent_id) or {}
+        baseline_summary = baseline.get(opponent_id) or {}
+
+        branch_crashes = int(branch_summary.get('crashes', 0))
+        baseline_crashes = int(baseline_summary.get('crashes', 0))
+        branch_rate = crash_rate(
+            branch_crashes, int(branch_summary.get('games', 0)),
+        )
+        baseline_rate = crash_rate(
+            baseline_crashes, int(baseline_summary.get('games', 0)),
+        )
+        invalid = (
+            series_crashed_out(branch_summary)
+            or series_crashed_out(baseline_summary)
+        )
+        detail.update({
+            'branch_crashes': branch_crashes,
+            'baseline_crashes': baseline_crashes,
+            'branch_crash_rate': round(branch_rate, 4),
+            'baseline_crash_rate': round(baseline_rate, 4),
+            'crash_invalid': invalid,
+        })
+        if invalid:
+            verdict = 'invalid'
+
+    return verdict, details
+
+
 def summarize_series(games: list[dict]) -> dict:
     """Summarize the raw game records of one series.
 
     Each game is a dict with at least a ``result`` key; ``duration`` (in
     seconds) is used when present.  Crashed games count as losses, which
-    matches how the results tab counts them.
+    matches how the results tab counts them, and are counted separately
+    as ``crashes`` so a series that mostly crashed can be recognized and
+    reported as invalid instead of judged.
     """
-    wins = losses = ties = unfinished = 0
+    wins = losses = ties = unfinished = crashes = 0
     durations: list[int] = []
 
     for game in games:
         result = (game.get('result') or '').strip()
         if result == 'Victory':
             wins += 1
-        elif result in ('Defeat', 'Crash'):
+        elif result == 'Crash':
+            crashes += 1
+            losses += 1
+        elif result == 'Defeat':
             losses += 1
         elif result in UNFINISHED_RESULTS:
             unfinished += 1
@@ -219,11 +292,29 @@ def summarize_series(games: list[dict]) -> dict:
         'losses': losses,
         'ties': ties,
         'unfinished': unfinished,
+        'crashes': crashes,
         'durations': durations,
         'duration_total': sum(durations),
         'duration_median': int(statistics.median(durations)) if durations else None,
         'game_list': games,
     }
+
+
+def crash_rate(crashes: int, games: int) -> float:
+    """Return the share of *games* that crashed (0.0 when nothing was played)."""
+    if games <= 0:
+        return 0.0
+    return crashes / games
+
+
+def series_crashed_out(summary: dict, limit: float = CRASH_RATE_LIMIT) -> bool:
+    """Return True when a series crashed too often to be judged.
+
+    *summary* is a series summary as produced by :func:`summarize_series`.
+    """
+    games = int(summary.get('games', 0))
+    crashes = int(summary.get('crashes', 0))
+    return crash_rate(crashes, games) > limit
 
 
 # ---------------------------------------------------------------------------
@@ -559,8 +650,8 @@ def build_gate_status(run) -> dict:
             opponent_ids.append(opponent_id)
 
     results = []
-    branch_wins: dict[int, int] = {}
-    baseline_wins: dict[int, int] = {}
+    branch_summaries: dict[int, dict] = {}
+    baseline_summaries: dict[int, dict] = {}
 
     for opponent_id in opponent_ids:
         opponent = CustomBot.objects.filter(id=opponent_id).first()
@@ -570,8 +661,8 @@ def build_gate_status(run) -> dict:
         baseline_summary = summarize_series([
             _game_record(m) for m in baseline_by_opponent.get(opponent_id, [])
         ])
-        branch_wins[opponent_id] = branch_summary['wins']
-        baseline_wins[opponent_id] = baseline_summary['wins']
+        branch_summaries[opponent_id] = branch_summary
+        baseline_summaries[opponent_id] = baseline_summary
         results.append({
             'opponent_id': opponent_id,
             'opponent_name': opponent.name if opponent else '',
@@ -579,7 +670,7 @@ def build_gate_status(run) -> dict:
             'baseline': baseline_summary,
         })
 
-    verdict, details = evaluate_noise_band(branch_wins, baseline_wins)
+    verdict, details = evaluate_verdict(branch_summaries, baseline_summaries)
     by_opponent = {detail['opponent_id']: detail for detail in details}
     for record in results:
         record.update(by_opponent.get(record['opponent_id'], {}))

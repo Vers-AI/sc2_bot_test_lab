@@ -13,7 +13,12 @@ Input JSON:
 - repo_url (str): bot repo whose branch is under test; must match a registered
   test bot's source.
 - branch (str): branch to test. Worktree created/reused exactly as the existing
-  branch machinery does (aiarena/worktrees/<sanitized_branch>/).
+  branch machinery does (aiarena/worktrees/<sanitized_branch>/). The worktree is
+  prepared with its submodules checked out (`git submodule update --init
+  --recursive`): `git worktree add` does not check out submodules, so a bot that
+  imports a pinned submodule would crash on import when it is started from a
+  fresh worktree. A submodule checkout that fails fails the trigger with a clear
+  error (500) instead of starting a series that can only crash.
 - test_bot_id (int): registered test-subject bot.
 - opponent_bot_ids (list[int]): roster opponents for the series.
 - games_per_opponent (int, default 3): series length per opponent.
@@ -25,11 +30,12 @@ Returns 200 {"run_id": <test_group_id>} immediately. Returns 409
 ### GET /api/gate-status/<run_id>/
 Returns JSON:
 - status: "pending" | "running" | "complete"
-- verdict: "pass" | "fail" (present when complete)
+- verdict: "pass" | "fail" | "invalid" (present when complete)
 - noise_band: the active rule, stated in the response (default: within ±1
   game per games_per_opponent-series vs baseline)
 - results: per-opponent record vs baseline: opponent id/name, wins, losses,
-  durations, and the raw game list — raw numbers always exposed so a caller
+  crash counts (branch.crashes / baseline.crashes), the crash rates, durations,
+  and the raw game list — raw numbers always exposed so a caller
   may apply custom judging without a lab change.
 
 ## Judging
@@ -41,6 +47,14 @@ returned for custom judging.
 The band is applied per opponent: the branch series may win at most one game
 more and at most one game fewer than the same series on the baseline ref. A
 single opponent outside the band fails the run.
+
+Crashed games are counted separately from wins and losses: a crash is a broken
+run, not a lost game. If the crash rate of either side of a series is above 50%,
+the series says nothing about the bot's play and the verdict is "invalid"
+instead of "pass" or "fail" — "invalid" wins over both. Without that rule a
+baseline that crashed every game looks exactly like a baseline the branch
+merely failed to beat, and the run is judged "pass" although nothing was
+played.
 
 ## Concurrency
 One gate run lab-wide at a time. Enforced server-side with a lock; second
@@ -57,8 +71,10 @@ Shared bridge token from lab config, passed as a header by callers (the
 GitHub runner job). No per-bot credentials.
 
 ## Non-goals / unchanged
-Existing worktree machinery, match launching, the Compare tab (gate runs land
-as normal test groups, visible in the UI), and the trigger-tests endpoint.
+Match launching, the Compare tab (gate runs land as normal test groups,
+visible in the UI), and the trigger-tests endpoint. The worktree machinery is
+unchanged except that it now checks out the submodules of the worktree it
+hands out (see the trigger section).
 
 ## Implementation notes (v0.1 clarifications)
 
@@ -85,7 +101,19 @@ above.
   result. The verdict is only present when the run is complete.
 - **Raw results**: `results` is a list with one record per opponent, holding
   the `branch` and the `baseline` summary (wins, losses, ties, unfinished,
-  durations, duration total/median and the full game list) plus the win
-  `delta` and whether the opponent stayed inside the band.
+  crashes, durations, duration total/median and the full game list) plus the
+  win `delta`, whether the opponent stayed inside the band, the crash counts
+  of both sides (`branch_crashes` / `baseline_crashes`), their crash rates and
+  whether the series was invalidated by them (`crash_invalid`).
+- **Crash counts**: `crashes` is the number of games of the series that
+  crashed. Crashes also count as losses (that is how the results tab counts
+  them), but they are counted on their own so the crash rate can be judged.
+  A series with a crash rate above 50% on either side makes the whole run
+  `invalid`.
 - **Paired maps**: both series play the same maps for the same opponent and
   game index, so the comparison is not polluted by map differences.
+- **Worktree submodules**: a worktree is only handed to a match after its
+  submodules are checked out (`git submodule update --init --recursive`, with
+  a timeout). The checkout is skipped when the submodules are already there,
+  so reusing a worktree stays cheap. A checkout that fails aborts the
+  trigger — a series that can only crash is worse than no series at all.

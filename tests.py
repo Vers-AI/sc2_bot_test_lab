@@ -24,7 +24,7 @@ from unittest import mock
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 
-from . import gate
+from . import gate, worktrees
 from .models import CustomBot, GateRun, Match, TestGroup
 
 BRIDGE_TOKEN = 'test-bridge-token'
@@ -108,12 +108,255 @@ class SeriesSummaryTests(SimpleTestCase):
         self.assertEqual(summary['duration_total'], 350)
         self.assertEqual(summary['duration_median'], 100)
 
+    def test_crashes_are_counted_separately_from_the_other_losses(self):
+        games = [
+            {'result': 'Victory'},
+            {'result': 'Defeat'},
+            {'result': 'Crash'},
+            {'result': 'Crash'},
+        ]
+        summary = gate.summarize_series(games)
+        self.assertEqual(summary['crashes'], 2)
+        self.assertEqual(summary['wins'], 1)
+        # Crashes still count as losses (like the results tab counts them),
+        # but they are also counted on their own.
+        self.assertEqual(summary['losses'], 3)
+
+    def test_a_series_without_crashes(self):
+        summary = gate.summarize_series([
+            {'result': 'Victory'}, {'result': 'Defeat'},
+        ])
+        self.assertEqual(summary['crashes'], 0)
+
     def test_empty_series(self):
         summary = gate.summarize_series([])
         self.assertEqual(summary['games'], 0)
         self.assertEqual(summary['wins'], 0)
+        self.assertEqual(summary['crashes'], 0)
         self.assertEqual(summary['durations'], [])
         self.assertIsNone(summary['duration_median'])
+
+
+class CrashRateTests(SimpleTestCase):
+    """A series that mostly crashed cannot be judged (see gate.py)."""
+
+    def _summary(self, wins=0, games=3, crashes=0):
+        return {'wins': wins, 'games': games, 'crashes': crashes}
+
+    def test_crash_rate_of_a_series(self):
+        self.assertEqual(gate.crash_rate(3, 3), 1.0)
+        self.assertEqual(gate.crash_rate(1, 4), 0.25)
+        self.assertEqual(gate.crash_rate(0, 4), 0.0)
+
+    def test_crash_rate_of_an_unplayed_series(self):
+        self.assertEqual(gate.crash_rate(0, 0), 0.0)
+
+    def test_a_crashed_baseline_invalidates_the_verdict(self):
+        # The inaugural gate run: the branch played real games, the
+        # baseline crashed every single one — which looked like a pass
+        # (1 win vs 0 wins is inside the band) but says nothing.
+        verdict, details = gate.evaluate_verdict(
+            {1: self._summary(wins=1, crashes=0)},
+            {1: self._summary(wins=0, crashes=3)},
+        )
+        self.assertEqual(verdict, 'invalid')
+        self.assertTrue(details[0]['crash_invalid'])
+        self.assertEqual(details[0]['baseline_crashes'], 3)
+        self.assertEqual(details[0]['branch_crashes'], 0)
+
+    def test_a_crashed_branch_invalidates_the_verdict(self):
+        verdict, details = gate.evaluate_verdict(
+            {1: self._summary(wins=0, crashes=3)},
+            {1: self._summary(wins=2, crashes=0)},
+        )
+        self.assertEqual(verdict, 'invalid')
+        self.assertTrue(details[0]['crash_invalid'])
+
+    def test_a_clean_series_is_still_judged(self):
+        verdict, details = gate.evaluate_verdict(
+            {1: self._summary(wins=2)},
+            {1: self._summary(wins=2)},
+        )
+        self.assertEqual(verdict, 'pass')
+        self.assertFalse(details[0]['crash_invalid'])
+
+    def test_a_crash_rate_at_the_limit_is_still_judged(self):
+        # One crash in two games is exactly the limit — it does not
+        # exceed it, so the band decides.
+        verdict, details = gate.evaluate_verdict(
+            {1: self._summary(wins=1, games=2, crashes=1)},
+            {1: self._summary(wins=0, games=2, crashes=0)},
+        )
+        self.assertEqual(verdict, 'pass')
+        self.assertFalse(details[0]['crash_invalid'])
+
+    def test_one_crash_in_three_games_does_not_invalidate(self):
+        verdict, details = gate.evaluate_verdict(
+            {1: self._summary(wins=1, games=3, crashes=1)},
+            {1: self._summary(wins=0, games=3, crashes=0)},
+        )
+        self.assertEqual(verdict, 'pass')
+        self.assertEqual(details[0]['branch_crash_rate'], 0.3333)
+
+    def test_invalid_wins_over_fail(self):
+        # One opponent crashed, another is outside the band: the run
+        # cannot be judged at all, so it is invalid — not fail.
+        verdict, _ = gate.evaluate_verdict(
+            {1: self._summary(wins=3, crashes=0),
+             2: self._summary(wins=0, crashes=3)},
+            {1: self._summary(wins=0, crashes=0),
+             2: self._summary(wins=0, crashes=0)},
+        )
+        self.assertEqual(verdict, 'invalid')
+
+    def test_invalid_wins_over_pass(self):
+        verdict, _ = gate.evaluate_verdict(
+            {1: self._summary(wins=1, crashes=0)},
+            {1: self._summary(wins=0, crashes=3)},
+        )
+        self.assertEqual(verdict, 'invalid')
+
+    def test_a_series_without_games_is_not_invalid(self):
+        verdict, details = gate.evaluate_verdict(
+            {1: self._summary(wins=0, games=0, crashes=0)},
+            {1: self._summary(wins=0, games=0, crashes=0)},
+        )
+        self.assertEqual(verdict, 'pass')
+        self.assertFalse(details[0]['crash_invalid'])
+
+
+# ---------------------------------------------------------------------------
+# Worktrees — submodules
+# ---------------------------------------------------------------------------
+
+class WorktreeSubmoduleTests(SimpleTestCase):
+    """A fresh worktree has no submodules; the bot would crash on import."""
+
+    def setUp(self):
+        self.base_dir = tempfile.mkdtemp(prefix='gate-worktrees-')
+        self.addCleanup(shutil.rmtree, self.base_dir, True)
+
+        self.repo_dir = os.path.join(self.base_dir, 'repo')
+        self.sub_dir = os.path.join(self.base_dir, 'sub')
+        os.makedirs(self.repo_dir)
+        os.makedirs(self.sub_dir)
+
+        # The submodule of the test repo lives next to it, so git has to
+        # be allowed to clone over the file transport (the default is to
+        # refuse it).  The env vars are inherited by every git call the
+        # lab makes.
+        env_patcher = mock.patch.dict(os.environ, {
+            'GIT_CONFIG_COUNT': '1',
+            'GIT_CONFIG_KEY_0': 'protocol.file.allow',
+            'GIT_CONFIG_VALUE_0': 'always',
+            'GIT_AUTHOR_NAME': 'Test',
+            'GIT_AUTHOR_EMAIL': 'test@example.invalid',
+            'GIT_COMMITTER_NAME': 'Test',
+            'GIT_COMMITTER_EMAIL': 'test@example.invalid',
+        })
+        env_patcher.start()
+        self.addCleanup(env_patcher.stop)
+
+        # The submodule itself.
+        self._git('init', '-q', self.sub_dir)
+        with open(os.path.join(self.sub_dir, 'engine.py'), 'w') as handle:
+            handle.write('# engine\n')
+        self._git('add', '.', cwd=self.sub_dir)
+        self._git('commit', '-q', '-m', 'sub', cwd=self.sub_dir)
+
+        # The repo that pins it.
+        self._git('init', '-q', self.repo_dir)
+        with open(os.path.join(self.repo_dir, 'run.py'), 'w') as handle:
+            handle.write('# bot\n')
+        self._git('add', '.')
+        self._git('commit', '-q', '-m', 'init')
+        self._git('submodule', 'add', '-q', self.sub_dir, 'vendorlib')
+        self._git('commit', '-q', '-m', 'add submodule')
+        self._git('branch', 'feature/x')
+
+        base_patcher = mock.patch.object(
+            worktrees, 'WORKTREE_BASE_DIR', os.path.join(self.base_dir, 'worktrees'),
+        )
+        base_patcher.start()
+        self.addCleanup(base_patcher.stop)
+
+    def _git(self, *args, cwd=None, check=True):
+        return subprocess.run(
+            ['git', *args],
+            cwd=cwd or self.repo_dir,
+            capture_output=True,
+            text=True,
+            check=check,
+        )
+
+    def test_a_new_worktree_gets_its_submodule_checked_out(self):
+        worktree_path = worktrees.get_or_create_worktree(self.repo_dir, 'feature/x')
+        self.assertTrue(os.path.isdir(worktree_path))
+        # The submodule is checked out, so the bot can import it.
+        self.assertTrue(
+            os.path.isfile(os.path.join(worktree_path, 'vendorlib', 'engine.py'))
+        )
+
+    def test_a_reused_worktree_missing_its_submodule_is_completed(self):
+        # A worktree that exists but lost its submodule (e.g. it was
+        # created before the submodule existed) is completed.
+        worktree_path = os.path.join(self.base_dir, 'worktrees', 'feature_x')
+        self._git('worktree', 'add', '-q', worktree_path, 'feature/x')
+        self.assertFalse(
+            os.path.exists(os.path.join(worktree_path, 'vendorlib', 'engine.py'))
+        )
+
+        result = worktrees.get_or_create_worktree(self.repo_dir, 'feature/x')
+        self.assertEqual(result, worktree_path)
+        self.assertTrue(
+            os.path.isfile(os.path.join(worktree_path, 'vendorlib', 'engine.py'))
+        )
+
+    def test_a_failed_submodule_checkout_raises_a_clear_error(self):
+        # A repo whose branch pins a submodule that cannot be cloned.
+        broken_dir = os.path.join(self.base_dir, 'broken')
+        os.makedirs(broken_dir)
+        self._git('init', '-q', broken_dir)
+        with open(os.path.join(broken_dir, 'run.py'), 'w') as handle:
+            handle.write('# bot\n')
+        self._git('add', '.', cwd=broken_dir)
+        self._git('commit', '-q', '-m', 'init', cwd=broken_dir)
+        self._git('submodule', 'add', '-q', self.sub_dir, 'vendorlib', cwd=broken_dir)
+        self._git('commit', '-q', '-m', 'add submodule', cwd=broken_dir)
+        self._git('checkout', '-q', '-b', 'feature/broken', cwd=broken_dir)
+
+        gitmodules = os.path.join(broken_dir, '.gitmodules')
+        with open(gitmodules) as handle:
+            content = handle.read()
+        with open(gitmodules, 'w') as handle:
+            handle.write(
+                content.replace(self.sub_dir, os.path.join(self.base_dir, 'gone'))
+            )
+        self._git('commit', '-q', '-am', 'break the submodule url', cwd=broken_dir)
+        # The url of an added submodule is also cached in the config of
+        # the repo — drop it, so the broken one is used.
+        self._git('config', '--unset', 'submodule.vendorlib.url', cwd=broken_dir)
+        # The branch must not be checked out anywhere, so the lab has to
+        # create a worktree for it.
+        self._git('checkout', '-q', '-', cwd=broken_dir)
+
+        with self.assertRaises(worktrees.SubmoduleError) as ctx:
+            worktrees.get_or_create_worktree(broken_dir, 'feature/broken')
+        self.assertIn('vendorlib', str(ctx.exception))
+
+    def test_a_repo_without_submodules_still_works(self):
+        plain_dir = os.path.join(self.base_dir, 'plain')
+        os.makedirs(plain_dir)
+        self._git('init', '-q', plain_dir)
+        with open(os.path.join(plain_dir, 'run.py'), 'w') as handle:
+            handle.write('# bot\n')
+        self._git('add', '.', cwd=plain_dir)
+        self._git('commit', '-q', '-m', 'init', cwd=plain_dir)
+        self._git('branch', 'feature/y', cwd=plain_dir)
+
+        worktree_path = worktrees.get_or_create_worktree(plain_dir, 'feature/y')
+        self.assertTrue(os.path.isdir(worktree_path))
+        self.assertFalse(worktrees.ensure_submodules(worktree_path))
 
 
 class RepoUrlTests(SimpleTestCase):
@@ -524,6 +767,37 @@ class GateApiTests(TestCase):
         payload = response.json()
         self.assertEqual(payload['status'], 'complete')
         self.assertEqual(payload['verdict'], 'fail')
+
+    def test_status_reports_invalid_when_a_series_crashed(self):
+        # The inaugural gate run: the branch won one game, the baseline
+        # crashed every game.  Inside the band, so it used to be judged
+        # "pass" — a false pass, because the baseline never played.
+        run_id = self._finished_run(
+            ['Victory', 'Defeat', 'Tie'], ['Crash', 'Crash', 'Crash'],
+        )
+        response = self.client.get(
+            reverse('api_gate_status', args=[run_id]),
+            HTTP_X_LAB_BRIDGE_TOKEN=BRIDGE_TOKEN,
+        )
+        payload = response.json()
+        self.assertEqual(payload['status'], 'complete')
+        self.assertEqual(payload['verdict'], 'invalid')
+
+    def test_status_reports_the_crash_counts_of_both_series(self):
+        run_id = self._finished_run(
+            ['Victory', 'Crash'], ['Crash', 'Crash'],
+        )
+        response = self.client.get(
+            reverse('api_gate_status', args=[run_id]),
+            HTTP_X_LAB_BRIDGE_TOKEN=BRIDGE_TOKEN,
+        )
+        payload = response.json()
+        record = payload['results'][0]
+        self.assertEqual(record['branch']['crashes'], 1)
+        self.assertEqual(record['baseline']['crashes'], 2)
+        self.assertEqual(record['branch_crashes'], 1)
+        self.assertEqual(record['baseline_crashes'], 2)
+        self.assertTrue(record['crash_invalid'])
 
     def test_status_exposes_the_raw_numbers_of_both_series(self):
         run_id = self._finished_run(
