@@ -20,9 +20,10 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
-from . import aiarena_runner, bot_versions, match_queue, prompt_generator, worktrees
+from . import aiarena_runner, bot_versions, gate, match_queue, prompt_generator, worktrees
 from .models import (
     CustomBot,
+    GateRun,
     Match,
     MatchEvent,
     PromptTemplate,
@@ -1262,6 +1263,234 @@ def api_trigger_tests(request):
         })
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+
+
+@csrf_exempt
+@require_POST
+def api_trigger_gate(request):
+    """API endpoint to trigger a gate series — branch vs baseline.
+
+    Modeled on api_trigger_tests, but the lab plays the same series twice:
+    once on the branch under test and once on a baseline ref, and compares
+    the two with the noise band.
+
+    JSON body:
+      - repo_url (str): repo whose branch is under test; must match the
+        registered test bot's source repository
+      - branch (str): branch to test
+      - test_bot_id (int): registered test-subject bot
+      - opponent_bot_ids (list[int]): roster opponents for the series
+      - games_per_opponent (int, default 3): games per opponent, per series
+      - baseline (str, default "master"): comparison ref
+
+    Returns 200 {"run_id": <test_group_id>} immediately — the games are
+    played in the background.  Returns 409 {"status": "busy", "run_id":
+    <active_run_id>} when another gate run is already active.
+    """
+    import json
+    try:
+        body = json.loads(request.body) if request.body else {}
+    except json.JSONDecodeError:
+        return JsonResponse(
+            {'status': 'error', 'message': 'Invalid JSON'}, status=400,
+        )
+    if not isinstance(body, dict):
+        return JsonResponse(
+            {'status': 'error', 'message': 'JSON body must be an object'},
+            status=400,
+        )
+
+    # --- Auth ------------------------------------------------------------
+    if not gate.bridge_token_configured():
+        return JsonResponse(
+            {'status': 'error', 'message': 'Bridge token is not configured on this lab'},
+            status=503,
+        )
+    if not gate.check_bridge_token(request):
+        return JsonResponse(
+            {'status': 'error', 'message': 'Invalid or missing bridge token'},
+            status=401,
+        )
+
+    # --- Validate the request --------------------------------------------
+    repo_url = str(body.get('repo_url', '') or '').strip()
+    branch = str(body.get('branch', '') or '').strip()
+    baseline = str(body.get('baseline', '') or '').strip() or gate.DEFAULT_BASELINE
+    test_bot_id = body.get('test_bot_id')
+    opponent_bot_ids = body.get('opponent_bot_ids')
+    games_per_opponent = body.get('games_per_opponent', gate.DEFAULT_GAMES_PER_OPPONENT)
+
+    if not branch:
+        return JsonResponse(
+            {'status': 'error', 'message': 'branch is required'}, status=400,
+        )
+    if not repo_url:
+        return JsonResponse(
+            {'status': 'error', 'message': 'repo_url is required'}, status=400,
+        )
+    if branch == baseline:
+        return JsonResponse(
+            {'status': 'error', 'message': 'baseline must differ from branch'},
+            status=400,
+        )
+    if test_bot_id is None:
+        return JsonResponse(
+            {'status': 'error', 'message': 'test_bot_id is required'}, status=400,
+        )
+    if not isinstance(opponent_bot_ids, list) or not opponent_bot_ids:
+        return JsonResponse(
+            {'status': 'error', 'message': 'opponent_bot_ids must be a non-empty list'},
+            status=400,
+        )
+    try:
+        games_per_opponent = int(games_per_opponent)
+    except (TypeError, ValueError):
+        return JsonResponse(
+            {'status': 'error', 'message': 'games_per_opponent must be an integer'},
+            status=400,
+        )
+    if not 1 <= games_per_opponent <= gate.MAX_GAMES_PER_OPPONENT:
+        return JsonResponse(
+            {'status': 'error',
+             'message': f'games_per_opponent must be between 1 and {gate.MAX_GAMES_PER_OPPONENT}'},
+            status=400,
+        )
+
+    # --- Resolve the bots -------------------------------------------------
+    try:
+        test_bot = CustomBot.objects.get(id=test_bot_id)
+    except (CustomBot.DoesNotExist, ValueError, TypeError):
+        return JsonResponse(
+            {'status': 'error', 'message': f'Test bot with id {test_bot_id} not found'},
+            status=404,
+        )
+
+    opponents = []
+    for opponent_id in opponent_bot_ids:
+        try:
+            opponent = CustomBot.objects.get(id=opponent_id)
+        except (CustomBot.DoesNotExist, ValueError, TypeError):
+            return JsonResponse(
+                {'status': 'error', 'message': f'Opponent bot with id {opponent_id} not found'},
+                status=404,
+            )
+        if not opponent.is_aiarena:
+            return JsonResponse(
+                {'status': 'error',
+                 'message': f'Opponent bot "{opponent.name}" is not an aiarena bot'},
+                status=400,
+            )
+        opponents.append(opponent)
+
+    if not test_bot.source_path:
+        return JsonResponse(
+            {'status': 'error',
+             'message': f'Test bot "{test_bot.name}" has no source path configured'},
+            status=400,
+        )
+    if not gate.repo_matches_source(repo_url, test_bot.source_path):
+        return JsonResponse(
+            {'status': 'error',
+             'message': 'repo_url does not match the source repository of the test bot'},
+            status=400,
+        )
+
+    # --- Take the lab-wide lock ------------------------------------------
+    # A run whose series already finished (e.g. the server was restarted
+    # while it was playing) releases its lock here.
+    gate.reconcile_active_run()
+
+    test_group = TestGroup.objects.create(
+        description=f'gate: {branch} vs {baseline}'[:255],
+        test_suite=None,
+        branch=branch,
+    )
+    try:
+        run = gate.acquire_gate_lock(
+            test_group,
+            test_bot=test_bot,
+            branch=branch,
+            baseline=baseline,
+            games_per_opponent=games_per_opponent,
+            opponent_bot_ids=[opponent.id for opponent in opponents],
+            expected_matches=2 * len(opponents) * games_per_opponent,
+        )
+    except gate.GateBusy as busy:
+        test_group.delete()
+        return JsonResponse(
+            {'status': 'busy', 'run_id': busy.run_id}, status=409,
+        )
+
+    # --- Worktrees --------------------------------------------------------
+    # The branch and the baseline each get their own checkout, created or
+    # reused exactly like the existing branch machinery does.
+    try:
+        branch_source = worktrees.get_or_create_worktree(test_bot.source_path, branch)
+        baseline_source = worktrees.get_or_create_worktree(test_bot.source_path, baseline)
+    except ValueError as e:
+        run.delete()
+        test_group.delete()
+        return JsonResponse(
+            {'status': 'error', 'message': f'Invalid branch: {e}'}, status=400,
+        )
+
+    baseline_group = TestGroup.objects.create(
+        description=f'gate baseline: {baseline} vs {branch}'[:255],
+        test_suite=None,
+        branch=baseline,
+    )
+    run.baseline_group = baseline_group
+    run.save()
+
+    # --- Play the series in the background --------------------------------
+    gate.launch_gate_series(
+        run,
+        test_bot,
+        opponents,
+        games_per_opponent,
+        branch_group_id=test_group.id,
+        baseline_group_id=baseline_group.id,
+        branch_source=branch_source,
+        baseline_source=baseline_source,
+    )
+
+    return JsonResponse({'run_id': run.pk})
+
+
+@csrf_exempt
+def api_gate_status(request, run_id):
+    """API endpoint: status and verdict of a gate run.
+
+    Returns JSON:
+      - status: "pending" | "running" | "complete"
+      - verdict: "pass" | "fail" (present when the run is complete)
+      - noise_band: the rule the verdict was computed with
+      - results: per-opponent raw results of the branch series and of the
+        baseline series, so a caller can apply its own judging
+    """
+    if not gate.bridge_token_configured():
+        return JsonResponse(
+            {'status': 'error', 'message': 'Bridge token is not configured on this lab'},
+            status=503,
+        )
+    if not gate.check_bridge_token(request):
+        return JsonResponse(
+            {'status': 'error', 'message': 'Invalid or missing bridge token'},
+            status=401,
+        )
+
+    run = GateRun.objects.filter(pk=run_id).first()
+    if run is None:
+        return JsonResponse(
+            {'status': 'error', 'message': f'Gate run {run_id} not found'},
+            status=404,
+        )
+
+    # Polling the status also finishes the run when its series is over
+    # (the watcher thread normally does that).
+    gate.refresh_run_state(run)
+
+    return JsonResponse(gate.build_gate_status(run))
 
 
 def test_group_detail(request, group_id):

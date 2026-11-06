@@ -17,7 +17,9 @@ the [AI Arena ladder](https://aiarena.net) — but locally, under your control.
 - **Results, logs & replays** — every match records its result, full bot logs,
   and replay download
 - **API** — `POST /api/trigger-tests/` to fire matches or suites from scripts,
-  git hooks, or CI
+  git hooks, or CI, and a token-authenticated `POST /api/trigger-gate/` +
+  `GET /api/gate-status/<run_id>/` pair that plays a branch series against a
+  baseline and returns a verdict
 
 Every match, suite run, and test group is keyed to the bot under test, so
 different bots keep completely separate experiment histories.
@@ -270,3 +272,45 @@ JSON body:
 | `custom_bot_id` | int | *null* | When set, runs a single match vs this bot instead of the full test suite |
 | `test_suite_id` | int | *null* | Run a specific test suite (falls back to the bot's default suite, then "Blizzard AI") |
 | `branch` | string | `""` | Git branch name — creates a worktree so the bot source is mounted from that branch |
+
+### `POST /test_lab/api/trigger-gate/` (lab bridge)
+
+Runs a *gate series*: the same roster series is played on the branch under
+test and on a baseline ref, and the two are compared with a noise band.
+Requires the shared bridge token in the `X-Lab-Bridge-Token` header (or
+`Authorization: Bearer <token>`); the token comes from the
+`LAB_BRIDGE_TOKEN` environment variable — an unset token disables the
+endpoint instead of serving it unauthenticated.
+
+JSON body:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `repo_url` | string | **required** | Repo whose branch is under test — must match the registered test bot's source repository |
+| `branch` | string | **required** | Branch to test (worktree created/reused by the regular branch machinery) |
+| `test_bot_id` | int | **required** | Custom bot ID for Player 1 (the test subject) |
+| `opponent_bot_ids` | list[int] | **required** | Roster opponents for the series |
+| `games_per_opponent` | int | `3` | Games per opponent, per series |
+| `baseline` | string | `"master"` | Ref the baseline series is played on |
+
+Returns `{"run_id": <test_group_id>}` immediately — the games are played in
+the background.  One gate run runs lab-wide at a time: a second request
+gets `409 {"status": "busy", "run_id": <active_run_id>}`.
+
+### `GET /test_lab/api/gate-status/<run_id>/` (lab bridge)
+
+Same token header.  Returns the run status (`pending` / `running` /
+`complete`), the `noise_band` rule the verdict was computed with, the
+`verdict` (`pass` / `fail`) once the run is complete, and the raw
+per-opponent results of both the branch series and the baseline series
+(wins, losses, durations, game list) so a caller can apply its own
+judging.
+
+### Running the tests
+
+```bash
+python quickstart/manage.py test test_lab --settings=test_lab.quickstart.test_settings
+```
+
+The test settings use SQLite, so the unit tests need neither MySQL nor
+Docker.

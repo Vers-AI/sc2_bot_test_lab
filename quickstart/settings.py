@@ -120,3 +120,11 @@ USE_X_FORWARDED_HOST = bool(os.environ.get('TEST_LAB_USE_FORWARDED', ''))
 SECURE_PROXY_SSL_HEADER = (
     ('HTTP_X_FORWARDED_PROTO', 'https') if USE_X_FORWARDED_HOST else None
 )
+
+# ---------------------------------------------------------------------------
+# Lab bridge — shared token for the GitHub-facing gate API
+# ---------------------------------------------------------------------------
+# The bridge token is the only credential the GitHub runner job needs.  It
+# is read from the environment; an empty token disables the gate API
+# instead of serving it unauthenticated.
+LAB_BRIDGE_TOKEN = os.environ.get('LAB_BRIDGE_TOKEN', '')

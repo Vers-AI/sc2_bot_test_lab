@@ -204,6 +204,90 @@ class TestGroup(models.Model):
         return label
 
 
+class GateRun(models.Model):
+    """A gate run: one branch series compared against a baseline series.
+
+    The run id is the id of the branch test group, so a gate run lands in
+    the results UI as a normal test group.
+
+    The lab plays one gate run at a time.  That is enforced by
+    ``lock_slot``: it holds the value 1 while the run is active and NULL
+    once the series is finished.  The column is unique, so the database
+    itself refuses a second active run — the lock also survives a server
+    restart, unlike an in-process lock.
+    """
+
+    class Meta:
+        db_table = 'gate_run'
+
+    Status = models.TextChoices('Status', 'pending running complete')
+
+    test_group = models.OneToOneField(
+        TestGroup,
+        primary_key=True,
+        on_delete=models.CASCADE,
+        related_name='gate_run',
+        help_text='The branch test group of this run; its id is the run id.',
+    )
+    baseline_group = models.ForeignKey(
+        TestGroup,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='baseline_gate_runs',
+        help_text='The test group holding the baseline series of this run.',
+    )
+    test_bot = models.ForeignKey(
+        CustomBot,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='gate_runs',
+        help_text='The bot under test (Player 1).',
+    )
+    branch = models.CharField(
+        max_length=200,
+        help_text='Branch the series was played on.',
+    )
+    baseline = models.CharField(
+        max_length=200,
+        default='master',
+        help_text='Ref the baseline series was played on.',
+    )
+    games_per_opponent = models.IntegerField(
+        default=3,
+        help_text='Number of games played per opponent, per series.',
+    )
+    opponent_bot_ids = models.JSONField(
+        default=list,
+        blank=True,
+        help_text='Ids of the opponents in the series.',
+    )
+    expected_matches = models.IntegerField(
+        default=0,
+        help_text='Number of games the series consists of (both series).',
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=Status,
+        default='pending',
+        help_text='pending while launching, running while games are played, '
+                  'complete when the series has a result.',
+    )
+    lock_slot = models.IntegerField(
+        null=True,
+        blank=True,
+        unique=True,
+        help_text='Holds 1 while this run owns the lab-wide gate lock; '
+                  'NULL when the run is finished.',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Gate run {self.test_group_id} ({self.branch} vs {self.baseline})"
+
+
 class Match(models.Model):
     class Meta:
         db_table = 'match'

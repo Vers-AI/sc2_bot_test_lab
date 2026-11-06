@@ -54,6 +54,8 @@ urlpatterns = [
     # API
     path('api/trigger-tests/', views.api_trigger_tests, name='api_trigger_tests'),
     path('api/trigger-ticket-tests/', views.api_trigger_ticket_tests, name='api_trigger_ticket_tests'),
+    path('api/trigger-gate/', views.api_trigger_gate, name='api_trigger_gate'),
+    path('api/gate-status/<int:run_id>/', views.api_gate_status, name='api_gate_status'),
 
     # Tickets
     path('tickets/', views.tickets_page, name='tickets'),
