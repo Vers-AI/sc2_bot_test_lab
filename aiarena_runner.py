@@ -440,8 +440,6 @@ def _write_compose_override(
         )
 
     lines.append('  bot_controller2:')
-    lines.append('    environment:')
-    lines.append('      - PYTHONDONTWRITEBYTECODE=1')
     dockerfile = test_bot.dockerfile
     if is_past_version:
         assert past_version_cache_path is not None
@@ -502,7 +500,13 @@ def _write_compose_override(
                     '    environment:',
                     '      - "PROXY_FWD_ENABLE=1"',
                     '      - "PROXY_FWD_PORT=8080"',
+                    '      - "PYTHONDONTWRITEBYTECODE=1"',
                 ]
+        else:
+            lines += [
+                '    environment:',
+                '      - PYTHONDONTWRITEBYTECODE=1',
+            ]
         lines.append('    volumes:')
         if opponent_bot is not None:
             lines += _opponent_volume_mounts(opponent_bot, bot2_name)
