@@ -355,6 +355,18 @@ def get_or_create_worktree(repo_path: str, branch: str) -> str:
     if not os.path.isdir(repo_path):
         raise ValueError(f'Repository path does not exist: {repo_path}')
 
+    # Refresh remote refs first: worktree creation resolves local refs, and a
+    # stale local ref (e.g. an old master) would silently test ancient code
+    # (found by the first gate runs: baseline master was months behind origin
+    # and crashed every game on a long-fixed ImportError).
+    subprocess.run(
+        ['git', 'fetch', 'origin', '--prune'],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
     # Verify the branch exists in the repo
     result = subprocess.run(
         ['git', 'rev-parse', '--verify', branch],
