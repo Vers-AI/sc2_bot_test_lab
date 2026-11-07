@@ -411,9 +411,14 @@ def _write_compose_override(
     from ``aiarena/configs/``. Config files are overlaid on top of the
     bot directory via additional volume mounts.
     """
+    # Root-owned bytecode written by root-run containers into live-mounted
+    # source breaks later worktree prep (rm: Permission denied on .pyc) — the
+    # containers never need the cache anyway, mounted source is transient.
     lines = [
         'services:',
         '  bot_controller1:',
+        '    environment:',
+        '      - PYTHONDONTWRITEBYTECODE=1',
     ]
     if test_bot.dockerfile:
         lines += [
@@ -435,6 +440,8 @@ def _write_compose_override(
         )
 
     lines.append('  bot_controller2:')
+    lines.append('    environment:')
+    lines.append('      - PYTHONDONTWRITEBYTECODE=1')
     dockerfile = test_bot.dockerfile
     if is_past_version:
         assert past_version_cache_path is not None
