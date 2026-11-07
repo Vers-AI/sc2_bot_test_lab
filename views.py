@@ -1500,6 +1500,14 @@ def api_gate_status(request, run_id):
             status=404,
         )
 
+    # Polling is the queue's heartbeat: with the dashboard idle, nothing
+    # drains queued matches — the first match would wait forever for a drain
+    # that only a UI load or a finishing match would trigger.
+    try:
+        match_queue.drain_queue()
+    except Exception:
+        logger.exception('Error draining match queue during gate status poll')
+
     # Polling the status also finishes the run when its series is over
     # (the watcher thread normally does that).
     gate.refresh_run_state(run)
