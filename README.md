@@ -303,6 +303,14 @@ out submodules, so a bot that imports a pinned submodule would crash on
 import.  A submodule checkout that fails aborts the trigger with a clear
 error instead of starting a series that can only crash.
 
+A repo may also provide a prepare script — `scripts/prepare_worktree.sh` or
+`scripts/vendor_lab_deps.sh` (first match wins) — for repos that vendor
+dependencies git ignores (an in-tree engine library, a map analyzer, compiled
+extensions): git restores none of those files in a worktree, so the lab runs
+the repo's own script in the worktree instead of guessing which files
+matter.  A prepare script that fails aborts the trigger with the script name
+and its stderr; repos without ignored dependencies need no script.
+
 ### `GET /test_lab/api/gate-status/<run_id>/` (lab bridge)
 
 Same token header.  Returns the run status (`pending` / `running` /

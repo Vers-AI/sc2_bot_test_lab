@@ -11,6 +11,13 @@ bot that imports a pinned submodule crashes on import when it is started
 from a fresh worktree.  Every worktree handed out by this module therefore
 gets its submodules checked out as well (see :func:`ensure_submodules`).
 
+Some repos vendor dependencies that git ignores (an in-tree engine library, a
+map analyzer, compiled extensions).  Git restores none of those files in a
+worktree, so the bot would crash on import there.  The lab must not guess
+which files matter — instead the repo states it in a prepare script, and
+the lab runs it in the worktree it hands out (see
+:func:`run_prepare_script`).
+
 Callers are responsible for cleanup via ``remove_worktree()`` when a
 branch is no longer needed.
 """
@@ -20,7 +27,9 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
 import subprocess
+import time
 
 logger = logging.getLogger('test_lab')
 
@@ -40,6 +49,21 @@ WORKTREE_BASE_DIR = os.environ.get(
 #: the caller forever.
 SUBMODULE_TIMEOUT = 300
 
+#: Conventional locations of a repo-provided "prepare" script, in the order
+#: they are looked up (first match wins).  A repo that vendors gitignored
+#: dependencies provides one of these, and the lab runs it in the worktree
+#: so the checkout is usable.  The names are the whole contract: the lab
+#: never guesses which files of a repo are needed.
+PREPARE_SCRIPT_PATHS = (
+    os.path.join('scripts', 'prepare_worktree.sh'),
+    os.path.join('scripts', 'vendor_lab_deps.sh'),
+)
+
+#: Timeout (seconds) for the repo-provided prepare script.  It may
+#: download or build dependencies, so this is generous — but it must not
+#: block the caller forever.
+PREPARE_TIMEOUT = 600
+
 
 class WorktreeError(Exception):
     """Raised when a worktree could not be prepared for a run."""
@@ -47,6 +71,10 @@ class WorktreeError(Exception):
 
 class SubmoduleError(WorktreeError):
     """Raised when the submodules of a worktree could not be checked out."""
+
+
+class PrepareScriptError(WorktreeError):
+    """Raised when the repo-provided prepare script of a worktree failed."""
 
 
 def _sanitize_branch_name(branch: str) -> str:
@@ -199,6 +227,105 @@ def ensure_submodules(worktree_path: str) -> bool:
     return True
 
 
+def find_prepare_script(worktree_path: str) -> str | None:
+    """Return the prepare script of *worktree_path*, or ``None``.
+
+    The script is looked up at the conventional paths (see
+    :data:`PREPARE_SCRIPT_PATHS`), the first one that exists wins.  It is
+    looked up in the worktree itself, so a script that only exists on the
+    branch under test is found, and one that was removed on that branch is
+    not.
+    """
+    for relative_path in PREPARE_SCRIPT_PATHS:
+        candidate = os.path.join(worktree_path, relative_path)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def _prepare_script_command(script_path: str) -> list[str]:
+    """Return the command that runs *script_path*.
+
+    An executable script is run directly.  When the executable bit was
+    lost (e.g. the file was checked out with ``core.fileMode`` off), the
+    script is run with a shell instead of failing.
+    """
+    if os.access(script_path, os.X_OK):
+        return [script_path]
+    for shell in ('bash', 'sh'):
+        if shutil.which(shell):
+            return [shell, script_path]
+    return [script_path]
+
+
+def run_prepare_script(worktree_path: str) -> str | None:
+    """Run the repo-provided prepare script of *worktree_path*.
+
+    A repo whose dependencies are vendored in-tree (and therefore ignored
+    by git) provides a prepare script at one of the conventional paths.
+    Git restores none of those files in a worktree, so the script is run
+    in the worktree before it is handed to a match.
+
+    The script is run with the worktree as its working directory and with
+    a generous timeout (:data:`PREPARE_TIMEOUT`), because it may download
+    or build dependencies.
+
+    Returns the path of the script that ran, or ``None`` when the repo
+    does not provide one — repos without ignored dependencies need no
+    script, so their worktrees are handed out unchanged.
+
+    Raises :class:`PrepareScriptError` when the script fails: a worktree
+    whose dependencies were not prepared would only crash on import, so
+    the caller must not continue with it.
+    """
+    script_path = find_prepare_script(worktree_path)
+    if script_path is None:
+        logger.debug(
+            'No prepare script in %s — the worktree is used as it is',
+            worktree_path,
+        )
+        return None
+
+    script_name = os.path.relpath(script_path, worktree_path)
+    logger.info(
+        'Running the prepare script %s in %s', script_name, worktree_path,
+    )
+
+    started = time.monotonic()
+    try:
+        result = subprocess.run(
+            _prepare_script_command(script_path),
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+            timeout=PREPARE_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise PrepareScriptError(
+            f'Timed out after {PREPARE_TIMEOUT}s while running the prepare '
+            f'script {script_name} in {worktree_path}'
+        ) from exc
+    except OSError as exc:
+        raise PrepareScriptError(
+            f'Could not run the prepare script {script_name} in '
+            f'{worktree_path}: {exc}'
+        ) from exc
+
+    duration = time.monotonic() - started
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or '').strip()
+        raise PrepareScriptError(
+            f'The prepare script {script_name} failed in {worktree_path} '
+            f'(exit code {result.returncode}): {detail}'
+        )
+
+    logger.info(
+        'Ran the prepare script %s in %s (%.1fs)',
+        script_name, worktree_path, duration,
+    )
+    return script_path
+
+
 def get_or_create_worktree(repo_path: str, branch: str) -> str:
     """Return a worktree for *branch*, reusing an existing one if possible.
 
@@ -208,15 +335,19 @@ def get_or_create_worktree(repo_path: str, branch: str) -> str:
 
     Otherwise a new worktree is created under ``aiarena/worktrees/``.
 
-    The submodules of the worktree are checked out as well, so the bot
-    can be started from it (a fresh worktree has no submodules, and a
-    bot that imports one would crash on import).
+    The submodules of the worktree are checked out as well, and the
+    repo-provided prepare script (if the repo has one) is run in it, so
+    the bot can be started from it: a fresh worktree has no submodules
+    and no vendored (gitignored) dependencies, and a bot that imports one
+    would crash on import.
 
     *repo_path* is the path to the main git repository (e.g. ``bot/``).
 
     Returns the absolute path to the worktree directory.
     Raises ``ValueError`` if the branch doesn't exist or the repo is invalid.
     Raises :class:`SubmoduleError` if the submodules could not be checked out.
+    Raises :class:`PrepareScriptError` if the repo-provided prepare script
+    failed.
     """
     if not _validate_branch_name(branch):
         raise ValueError(f'Invalid branch name: {branch!r}')
@@ -246,6 +377,7 @@ def get_or_create_worktree(repo_path: str, branch: str) -> str:
             'Using existing worktree for branch %s at %s', branch, existing,
         )
         ensure_submodules(existing)
+        run_prepare_script(existing)
         return existing
 
     worktree_path = get_worktree_path(repo_path, branch)
@@ -267,6 +399,7 @@ def get_or_create_worktree(repo_path: str, branch: str) -> str:
         except (subprocess.TimeoutExpired, OSError) as e:
             logger.warning('Failed to update worktree for %s: %s', branch, e)
         ensure_submodules(worktree_path)
+        run_prepare_script(worktree_path)
         return worktree_path
 
     # Clean up any stale directory that isn't a valid worktree
@@ -301,6 +434,7 @@ def get_or_create_worktree(repo_path: str, branch: str) -> str:
 
     logger.info('Created worktree for branch %s at %s', branch, worktree_path)
     ensure_submodules(worktree_path)
+    run_prepare_script(worktree_path)
     return worktree_path
 
 

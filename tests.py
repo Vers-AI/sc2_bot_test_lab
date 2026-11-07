@@ -359,6 +359,141 @@ class WorktreeSubmoduleTests(SimpleTestCase):
         self.assertFalse(worktrees.ensure_submodules(worktree_path))
 
 
+class WorktreePrepareScriptTests(SimpleTestCase):
+    """A repo may provide a prepare script for its worktrees.
+
+    Repos that vendor gitignored dependencies (an in-tree engine library, a
+    map analyzer, compiled extensions) cannot run from a worktree: git
+    restores none of those files.  The lab must not guess which files
+    matter — the repo states it in a prepare script, and the lab runs it.
+    """
+
+    def setUp(self):
+        self.base_dir = tempfile.mkdtemp(prefix='gate-prepare-')
+        self.addCleanup(shutil.rmtree, self.base_dir, True)
+
+        env_patcher = mock.patch.dict(os.environ, {
+            'GIT_AUTHOR_NAME': 'Test',
+            'GIT_AUTHOR_EMAIL': 'test@example.invalid',
+            'GIT_COMMITTER_NAME': 'Test',
+            'GIT_COMMITTER_EMAIL': 'test@example.invalid',
+        })
+        env_patcher.start()
+        self.addCleanup(env_patcher.stop)
+
+        self.repo_dir = os.path.join(self.base_dir, 'repo')
+        os.makedirs(self.repo_dir)
+        self._git('init', '-q', self.repo_dir)
+        with open(os.path.join(self.repo_dir, 'run.py'), 'w') as handle:
+            handle.write('# bot\n')
+        self._git('add', '.')
+        self._git('commit', '-q', '-m', 'init')
+        self._git('branch', 'feature/x')
+
+        base_patcher = mock.patch.object(
+            worktrees, 'WORKTREE_BASE_DIR', os.path.join(self.base_dir, 'worktrees'),
+        )
+        base_patcher.start()
+        self.addCleanup(base_patcher.stop)
+
+    def _git(self, *args, cwd=None, check=True):
+        return subprocess.run(
+            ['git', *args],
+            cwd=cwd or self.repo_dir,
+            capture_output=True,
+            text=True,
+            check=check,
+        )
+
+    def _write_script(self, relative_path, body):
+        """Add a prepare script to the repo (and to the branch under test)."""
+        path = os.path.join(self.repo_dir, relative_path)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w') as handle:
+            handle.write(body)
+        os.chmod(path, 0o755)
+        self._git('add', '.')
+        self._git('commit', '-q', '-m', f'add {relative_path}')
+        # The branch under test gets the script as well.
+        self._git('branch', '-f', 'feature/x')
+
+    def test_the_prepare_script_runs_in_the_worktree(self):
+        self._write_script(
+            'scripts/vendor_lab_deps.sh',
+            '#!/bin/sh\npwd > prepare_cwd.txt\ntouch vendored_marker\n',
+        )
+
+        worktree_path = worktrees.get_or_create_worktree(self.repo_dir, 'feature/x')
+
+        # The vendored file the script created is there, so the bot can
+        # import it from the worktree.
+        self.assertTrue(
+            os.path.isfile(os.path.join(worktree_path, 'vendored_marker'))
+        )
+        # The script ran with the worktree as its working directory.
+        with open(os.path.join(worktree_path, 'prepare_cwd.txt')) as handle:
+            self.assertEqual(
+                os.path.realpath(handle.read().strip()),
+                os.path.realpath(worktree_path),
+            )
+
+    def test_the_first_conventional_script_wins(self):
+        self._write_script(
+            'scripts/vendor_lab_deps.sh',
+            '#!/bin/sh\ntouch vendor_marker\n',
+        )
+        self._write_script(
+            'scripts/prepare_worktree.sh',
+            '#!/bin/sh\ntouch prepare_marker\n',
+        )
+
+        worktree_path = worktrees.get_or_create_worktree(self.repo_dir, 'feature/x')
+
+        self.assertTrue(
+            os.path.isfile(os.path.join(worktree_path, 'prepare_marker'))
+        )
+        self.assertFalse(
+            os.path.exists(os.path.join(worktree_path, 'vendor_marker'))
+        )
+
+    def test_a_reused_worktree_is_prepared_again(self):
+        self._write_script(
+            'scripts/vendor_lab_deps.sh',
+            '#!/bin/sh\ntouch vendored_marker\n',
+        )
+
+        worktree_path = worktrees.get_or_create_worktree(self.repo_dir, 'feature/x')
+        marker = os.path.join(worktree_path, 'vendored_marker')
+        self.assertTrue(os.path.isfile(marker))
+
+        # The worktree is reused the second time — and prepared again, so
+        # the vendored files are there even when they went missing.
+        os.remove(marker)
+        again = worktrees.get_or_create_worktree(self.repo_dir, 'feature/x')
+
+        self.assertEqual(again, worktree_path)
+        self.assertTrue(os.path.isfile(marker))
+
+    def test_a_failing_prepare_script_raises_a_clear_error(self):
+        self._write_script(
+            'scripts/vendor_lab_deps.sh',
+            '#!/bin/sh\necho "vendor download failed" >&2\nexit 3\n',
+        )
+
+        with self.assertRaises(worktrees.PrepareScriptError) as ctx:
+            worktrees.get_or_create_worktree(self.repo_dir, 'feature/x')
+
+        message = str(ctx.exception)
+        self.assertIn('vendor_lab_deps.sh', message)
+        self.assertIn('vendor download failed', message)
+
+    def test_a_repo_without_a_prepare_script_is_used_as_it_is(self):
+        worktree_path = worktrees.get_or_create_worktree(self.repo_dir, 'feature/x')
+
+        self.assertTrue(os.path.isdir(worktree_path))
+        self.assertIsNone(worktrees.run_prepare_script(worktree_path))
+
+
 class RepoUrlTests(SimpleTestCase):
     def test_normalizes_the_usual_spellings(self):
         self.assertEqual(
@@ -685,6 +820,24 @@ class GateApiTests(TestCase):
     def test_trigger_rejects_a_silly_series_length(self):
         response = self._post(self._payload(games_per_opponent=0))
         self.assertEqual(response.status_code, 400)
+
+    def test_a_failing_prepare_script_fails_the_trigger(self):
+        # The worktree could not be prepared (the repo-provided prepare
+        # script failed), so no series is started — a series that can only
+        # crash is worse than no series at all.
+        error = worktrees.PrepareScriptError(
+            'The prepare script scripts/vendor_lab_deps.sh failed in '
+            '/tmp/worktree (exit code 1): vendor download failed'
+        )
+        with mock.patch(
+            'test_lab.worktrees.get_or_create_worktree',
+            side_effect=error,
+        ), mock.patch('test_lab.gate.launch_gate_series') as launch:
+            response = self._post()
+
+        self.assertEqual(response.status_code, 500)
+        self.assertIn('vendor download failed', response.json()['message'])
+        launch.assert_not_called()
 
     def test_trigger_rejects_invalid_json(self):
         response = self.client.post(

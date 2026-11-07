@@ -19,6 +19,14 @@ Input JSON:
   imports a pinned submodule would crash on import when it is started from a
   fresh worktree. A submodule checkout that fails fails the trigger with a clear
   error (500) instead of starting a series that can only crash.
+  A repo may also provide a prepare script — `scripts/prepare_worktree.sh` or
+  `scripts/vendor_lab_deps.sh` (first match wins) — for repos that vendor
+  dependencies git ignores (an in-tree engine library, a map analyzer, compiled
+  extensions): git restores none of those files in a worktree, so the lab runs
+  the repo's own script in the fresh worktree instead of guessing which files
+  matter. A prepare script that fails fails the trigger with a clear error (500)
+  as well; repos without ignored dependencies need no script and are left
+  untouched.
 - test_bot_id (int): registered test-subject bot.
 - opponent_bot_ids (list[int]): roster opponents for the series.
 - games_per_opponent (int, default 3): series length per opponent.
@@ -74,7 +82,8 @@ GitHub runner job). No per-bot credentials.
 Match launching, the Compare tab (gate runs land as normal test groups,
 visible in the UI), and the trigger-tests endpoint. The worktree machinery is
 unchanged except that it now checks out the submodules of the worktree it
-hands out (see the trigger section).
+hands out and runs the repo-provided prepare script in it (see the trigger
+section).
 
 ## Implementation notes (v0.1 clarifications)
 
@@ -117,3 +126,15 @@ above.
   a timeout). The checkout is skipped when the submodules are already there,
   so reusing a worktree stays cheap. A checkout that fails aborts the
   trigger — a series that can only crash is worse than no series at all.
+- **Worktree prepare step**: some repos vendor dependencies that git ignores
+  (an in-tree engine library, a map analyzer, compiled extensions). Git
+  restores none of those files in a worktree, so a bot started from a fresh
+  worktree crashes on import. The lab does not guess which files a repo needs:
+  the repo states it in a prepare script, and the lab runs it. The convention
+  is two file names, looked up in this order (first match wins):
+  `scripts/prepare_worktree.sh`, `scripts/vendor_lab_deps.sh`. The script is
+  run in the worktree (the worktree is its working directory) with a generous
+  timeout, and its result is logged. A repo without such a script is left
+  untouched — no script is required. A script that fails aborts the trigger
+  with the script name and its stderr, so a worktree whose dependencies were
+  not prepared never reaches a match.
