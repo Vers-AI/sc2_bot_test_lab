@@ -426,7 +426,6 @@ MAP_LIST = [
     "PylonAIE_v4",
     "TorchesAIE_v4",
     "UltraloveAIE_v2",
-    "MagannathaAIE_v2",
     "LeyLinesAIE_v3",
 ]
 
