@@ -518,11 +518,22 @@ def repair_stale_run(run) -> bool:
     marked as crashed — so the run can finish and the lab-wide lock is
     released.
 
+    Only matches that were actually LAUNCHED are stale candidates. A
+    match still waiting in the queue (result 'Queued') is behind a live
+    serial queue, not lost: its start_timestamp is the queue-insertion
+    time, so in a long series the backlog legally waits hours, and the
+    2-hour stale rule must not bulk-fail games the queue is about to
+    play (observed 2026-11-21: gate run 70 lost 9 of 18 games exactly
+    2h after insertion while the queue kept finishing games normally).
+
     Returns True when at least one game was recovered.
     """
     from . import aiarena_runner
 
-    matches = _unfinished_matches([run.test_group_id, run.baseline_group_id])
+    matches = [
+        m for m in _unfinished_matches([run.test_group_id, run.baseline_group_id])
+        if m.result != 'Queued'
+    ]
     if not matches:
         return False
 
