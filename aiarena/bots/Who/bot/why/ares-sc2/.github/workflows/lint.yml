@@ -1,0 +1,33 @@
+name: Linting
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_call:
+
+jobs:
+  Linting:
+    runs-on: ubuntu-latest
+    steps:
+      # check-out repo
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      # install poetry
+      - name: Install poetry
+        run: pipx install poetry
+      # set-up python with cache
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'poetry'
+      # install requirements (including main + lint dev dependencies, so
+      # mypy sees the same third-party types as the local environment)
+      - name: Install requirements
+        run: poetry install --with lint --no-root
+      # run linters (ruff format check, ruff check, mypy)
+      - name: Run linters
+        run: |
+          set -o pipefail
+          poetry run make lint

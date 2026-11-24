@@ -1,0 +1,12 @@
+[submodule "ares-sc2"]
+	path = ares-sc2
+	url = https://github.com/AresSC2/ares-sc2
+[submodule "bot/really"]
+	path = bot/really
+	url = https://github.com/raspersc2/really
+[submodule "bot/why"]
+	path = bot/why
+	url = https://github.com/raspersc2/why
+[submodule "bot/what"]
+	path = bot/what
+	url = https://github.com/raspersc2/what

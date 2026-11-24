@@ -1,0 +1,10 @@
+{
+    "Bots": {
+        "DummyBot": {
+            "Race": "Terran",
+            "Type": "Python",
+            "RootPath": "./",
+            "FileName": "run.py"
+        }
+    }
+}

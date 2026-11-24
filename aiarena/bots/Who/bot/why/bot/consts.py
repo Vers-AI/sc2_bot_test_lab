@@ -1,0 +1,73 @@
+from enum import Enum
+
+from sc2.ids.unit_typeid import UnitTypeId as UnitID
+
+
+class ProxySCVStatus(str, Enum):
+    Idle = "idle"
+    Building = "building"
+    Defending = "defending"
+    Moving = "moving"
+    Repairing = "repairing"
+
+
+ATTACK_TARGET_IGNORE: set[UnitID] = {
+    UnitID.SCV,
+    UnitID.DRONE,
+    UnitID.PROBE,
+    UnitID.MULE,
+    UnitID.LARVA,
+    UnitID.EGG,
+    UnitID.CHANGELING,
+    UnitID.CHANGELINGMARINE,
+    UnitID.CHANGELINGMARINESHIELD,
+    UnitID.CHANGELINGZEALOT,
+    UnitID.CHANGELINGZERGLING,
+    UnitID.CHANGELINGZERGLINGWINGS,
+    UnitID.REAPER,
+}
+
+BIO_FORCES: set[UnitID] = {
+    UnitID.MARINE,
+    UnitID.MARAUDER,
+    UnitID.MEDIVAC,
+}
+
+COMMON_UNIT_IGNORE_TYPES: set[UnitID] = {
+    UnitID.EGG,
+    UnitID.LARVA,
+    UnitID.CREEPTUMORBURROWED,
+    UnitID.CREEPTUMORQUEEN,
+    UnitID.CREEPTUMOR,
+    UnitID.MULE,
+}
+
+UNIT_TYPE_TO_NUM_REPAIRERS: dict[UnitID, int] = {
+    UnitID.BUNKER: 4,
+    UnitID.SUPPLYDEPOT: 3,
+    UnitID.BARRACKS: 2,
+    UnitID.BARRACKSREACTOR: 2,
+    UnitID.FACTORYREACTOR: 2,
+    UnitID.BARRACKSTECHLAB: 2,
+    UnitID.FACTORYTECHLAB: 2,
+    UnitID.COMMANDCENTER: 2,
+    UnitID.ORBITALCOMMAND: 2,
+    UnitID.PLANETARYFORTRESS: 6,
+    UnitID.FACTORY: 2,
+    UnitID.STARPORT: 2,
+    UnitID.BATTLECRUISER: 3,
+    UnitID.CYCLONE: 2,
+    UnitID.RAVEN: 2,
+    UnitID.HELLION: 2,
+    UnitID.MEDIVAC: 2,
+    UnitID.SIEGETANK: 3,
+    UnitID.SIEGETANKSIEGED: 3,
+    UnitID.VIKINGFIGHTER: 3,
+    UnitID.WIDOWMINEBURROWED: 1,
+}
+
+SUPPLY_TYPES: set[UnitID] = {
+    UnitID.SUPPLYDEPOTLOWERED,
+    UnitID.SUPPLYDEPOT,
+    UnitID.PYLON,
+}

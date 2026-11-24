@@ -1,8 +1,19 @@
-# Don't commit bot directories (they're large and often downloaded per-user)
+# Bot directories stay out of git EXCEPT the build's shipped opponents:
+# DummyBot (lab smoke test) and Who (villain suite) are vendored at pinned
+# versions so members clone once and everything works.
 bots/*/
 
 # Keep the bots directory itself
 !bots/.gitkeep
+
+# Shipped opponents (vendored, pinned)
+!bots/DummyBot/
+!bots/DummyBot_p2/
+!bots/Who/
+
+# Never ship the vendored clone's git metadata or bytecode caches
+bots/Who/.git/
+bots/Who/**/__pycache__/
 
 # Cached past bot versions (extracted from git history)
 bot_versions/
