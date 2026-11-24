@@ -33,3 +33,6 @@ results.json
 !logs/.gitkeep
 !replays/.gitkeep
 !maps/.gitkeep
+
+# git metadata of the vendored Who clone, set aside at vendor time
+bots/Who/.git.vendored-aside/
